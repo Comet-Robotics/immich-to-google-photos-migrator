@@ -1,12 +1,12 @@
 import { join } from "node:path";
-import { Effect } from "effect";
+import { Deferred, Effect, Queue, Ref } from "effect";
 import { acquireRunLock, initialCheckpoint, loadOrCreateCheckpoint, saveCheckpoint, updateWorkItem } from "./checkpoint";
-import { discoverSourceTree } from "./discovery";
+import { discoverSourceTreeEffect } from "./discovery";
 import { buildMigrationPlan } from "./plan";
 import { buildReport, renderFinalReport, renderPlanSummary, writeReport } from "./report";
 import { BunProcessRunner } from "./rclone";
 import { RcloneClient } from "./rclone";
-import { CheckpointError, RcloneError, type CheckpointState, type MigrationPlan, type ProcessRunner, type RuntimeConfig, type WorkItem } from "./types";
+import { CheckpointError, RcloneError, type AppError, type CheckpointState, type MigrationPlan, type ProcessRunner, type RuntimeConfig, type WorkItem } from "./types";
 
 export interface RunMigrationOptions {
   readonly config: RuntimeConfig;
@@ -25,28 +25,30 @@ export async function runMigration(options: RunMigrationOptions): Promise<RunMig
   return Effect.runPromise(runMigrationEffect(options));
 }
 
-export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<RunMigrationResult, Error> {
+export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<RunMigrationResult, AppError> {
   return Effect.gen(function* () {
     const { config } = options;
     const runner = options.runner ?? new BunProcessRunner();
     const rclone = new RcloneClient({ config, runner });
-    const releaseLock = yield* Effect.acquireRelease(
+    yield* Effect.acquireRelease(
       Effect.tryPromise({
         try: () => acquireRunLock(config.stateDir),
-        catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+        catch: (error) =>
+          new CheckpointError({
+            message: error instanceof Error ? error.message : String(error),
+          }),
       }),
       (release) => Effect.promise(() => release()),
     );
 
     const preflight = yield* rclone.preflight();
-    const discovery = yield* Effect.tryPromise({
-      try: () => discoverSourceTree(config.sourceRoot),
-      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-    });
+    const discovery = yield* discoverSourceTreeEffect(config.sourceRoot).pipe(
+      Effect.mapError((error) => new CheckpointError({ message: String(error) })),
+    );
     const plan = buildMigrationPlan(discovery);
     const planReportPath = yield* Effect.tryPromise({
       try: () => writeReport(config.reportDir, "migration-plan.md", renderPlanSummary(plan)),
-      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      catch: (error) => new CheckpointError({ message: String(error) }),
     });
 
     if (config.planOnly) {
@@ -74,11 +76,11 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
     let checkpoint = yield* Effect.tryPromise({
       try: () =>
         loadOrCreateCheckpoint(checkpointPath, plan, config.remote, preflight.remoteFingerprint),
-      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      catch: (error) => new CheckpointError({ message: String(error) }),
     });
     yield* Effect.tryPromise({
       try: () => saveCheckpoint(checkpointPath, checkpoint),
-      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      catch: (error) => new CheckpointError({ message: String(error) }),
     });
 
     const visibleAlbums = yield* rclone.listAlbums();
@@ -121,15 +123,12 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
     const report = buildReport(plan, checkpoint);
     const finalReportPath = yield* Effect.tryPromise({
       try: () => writeReport(config.reportDir, "migration-report.md", renderFinalReport(report)),
-      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+      catch: (error) => new CheckpointError({ message: String(error) }),
     });
     const ok = report.failed.length === 0 && report.uncertain.length === 0 && report.remaining.length === 0;
 
     return { plan, checkpoint, planReportPath, finalReportPath, ok };
-  }).pipe(
-    Effect.scoped,
-    Effect.mapError((error) => (error instanceof Error ? error : new Error(String(error)))),
-  );
+  }).pipe(Effect.scoped);
 }
 
 interface RunWorkItemsOptions {
@@ -140,30 +139,53 @@ interface RunWorkItemsOptions {
   readonly workItems: readonly WorkItem[];
 }
 
-function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointState, Error> {
+interface CheckpointWriteRequest {
+  readonly item: WorkItem;
+  readonly update: Parameters<typeof updateWorkItem>[2];
+  readonly done: Deferred.Deferred<void, CheckpointError>;
+}
+
+function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointState, CheckpointError> {
   const grouped = groupByAlbum(options.workItems);
-  let checkpoint = options.checkpoint;
   return Effect.gen(function* () {
-    const lock = yield* Effect.makeSemaphore(1);
-    const updateAndSave = (
-      item: WorkItem,
-      update: Parameters<typeof updateWorkItem>[2],
-    ): Effect.Effect<void, Error> =>
-      lock.withPermits(1)(
-        Effect.tryPromise({
-          try: async () => {
-            checkpoint = updateWorkItem(checkpoint, item.id, update);
-            await saveCheckpoint(options.checkpointPath, checkpoint);
-          },
-          catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-        }),
-      );
+    const stateRef = yield* Ref.make(options.checkpoint);
+    const writeQueue = yield* Queue.unbounded<CheckpointWriteRequest>();
+    const writerEffect = Effect.forever(
+      Effect.gen(function* () {
+        const request = yield* Queue.take(writeQueue);
+        const result = yield* Effect.exit(
+          Effect.gen(function* () {
+            const current = yield* Ref.get(stateRef);
+            const next = updateWorkItem(current, request.item.id, request.update);
+            yield* Effect.tryPromise({
+              try: () => saveCheckpoint(options.checkpointPath, next),
+              catch: (error) => new CheckpointError({ message: String(error) }),
+            });
+            yield* Ref.set(stateRef, next);
+          }),
+        );
+        if (result._tag === "Failure") {
+          yield* Deferred.fail(request.done, new CheckpointError({ message: String(result.cause) }));
+          return;
+        }
+        yield* Deferred.succeed(request.done, undefined);
+      }),
+    );
+    yield* Effect.forkScoped(writerEffect);
+
+    const updateAndSave = (item: WorkItem, update: Parameters<typeof updateWorkItem>[2]) =>
+      Effect.gen(function* () {
+        const done = yield* Deferred.make<void, CheckpointError>();
+        yield* Queue.offer(writeQueue, { item, update, done });
+        yield* Deferred.await(done);
+      });
 
     yield* Effect.forEach(
       [...grouped.values()],
       (items) =>
         Effect.gen(function* () {
           for (const item of items) {
+            const checkpoint = yield* Ref.get(stateRef);
             const state = checkpoint.workItems[item.id];
             if (state?.status === "complete") {
               continue;
@@ -199,13 +221,17 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
 
             if (saveResult._tag === "Failure") {
               const message = String(saveResult.cause);
-              checkpoint = updateWorkItem(checkpoint, item.id, {
+              const checkpoint = yield* Ref.get(stateRef);
+              const next = updateWorkItem(checkpoint, item.id, {
                 status: "uncertain",
                 message: `rclone copy completed but checkpoint persistence failed: ${message}`,
               });
               yield* Effect.tryPromise({
-                try: () => saveCheckpoint(options.checkpointPath, checkpoint),
-                catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+                try: async () => {
+                  await saveCheckpoint(options.checkpointPath, next);
+                  await Effect.runPromise(Ref.set(stateRef, next));
+                },
+                catch: (error) => new CheckpointError({ message: String(error) }),
               });
             }
           }
@@ -213,8 +239,8 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
       { concurrency: options.config.concurrency },
     );
 
-    return checkpoint;
-  });
+    return yield* Ref.get(stateRef);
+  }).pipe(Effect.scoped);
 }
 
 

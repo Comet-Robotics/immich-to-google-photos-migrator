@@ -86,22 +86,53 @@ export function parseConfig(argv: readonly string[], cwd = process.cwd()): Runti
   const stateDir = values.get("state-dir") ?? ".immich-google-photos-migrator/state";
   const reportDir = values.get("report-dir") ?? ".immich-google-photos-migrator/reports";
 
-  const resolved = {
-    sourceRoot: resolve(cwd, sourceRoot),
-    remote,
-    stateDir: resolve(cwd, stateDir),
-    reportDir: resolve(cwd, reportDir),
-    concurrency,
-    planOnly: flags.has("plan-only"),
-    yes: flags.has("yes"),
-    acknowledgeNonLeafMedia: flags.has("acknowledge-non-leaf-media") || flags.has("yes"),
-    acknowledgeUnreadablePaths: flags.has("acknowledge-unreadable-paths") || flags.has("yes"),
-    acknowledgeUnknownRemote: flags.has("acknowledge-unknown-remote") || flags.has("yes"),
-    retryUncertain: flags.has("retry-uncertain"),
-    rcloneBinary: values.get("rclone-binary") ?? DEFAULT_RCLONE_BINARY,
+  const resolved = normalizeConfig(
+    {
+      sourceRoot,
+      remote,
+      stateDir,
+      reportDir,
+      concurrency,
+      planOnly: flags.has("plan-only"),
+      yes: flags.has("yes"),
+      acknowledgeNonLeafMedia: flags.has("acknowledge-non-leaf-media") || flags.has("yes"),
+      acknowledgeUnreadablePaths: flags.has("acknowledge-unreadable-paths") || flags.has("yes"),
+      acknowledgeUnknownRemote: flags.has("acknowledge-unknown-remote") || flags.has("yes"),
+      retryUncertain: flags.has("retry-uncertain"),
+      rcloneBinary: values.get("rclone-binary") ?? DEFAULT_RCLONE_BINARY,
+    },
+    cwd,
+  );
+  return parseRuntimeConfig(resolved);
+}
+
+export interface RawRuntimeConfig {
+  readonly sourceRoot: string;
+  readonly remote: string;
+  readonly stateDir: string;
+  readonly reportDir: string;
+  readonly concurrency: number;
+  readonly planOnly: boolean;
+  readonly yes: boolean;
+  readonly acknowledgeNonLeafMedia: boolean;
+  readonly acknowledgeUnreadablePaths: boolean;
+  readonly acknowledgeUnknownRemote: boolean;
+  readonly retryUncertain: boolean;
+  readonly rcloneBinary: string;
+}
+
+export function normalizeConfig(raw: RawRuntimeConfig, cwd = process.cwd()): RawRuntimeConfig {
+  return {
+    ...raw,
+    sourceRoot: resolve(cwd, raw.sourceRoot),
+    stateDir: resolve(cwd, raw.stateDir),
+    reportDir: resolve(cwd, raw.reportDir),
   };
+}
+
+export function parseRuntimeConfig(raw: RawRuntimeConfig): RuntimeConfig {
   try {
-    return Schema.decodeUnknownSync(RuntimeConfigSchema)(resolved) as RuntimeConfig;
+    return Schema.decodeUnknownSync(RuntimeConfigSchema)(raw) as RuntimeConfig;
   } catch {
     throw new ConfigError({ message: "Invalid runtime configuration values" });
   }

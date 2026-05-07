@@ -1,7 +1,8 @@
-import { mkdir, open, rename, rm, stat } from "node:fs/promises";
+import { open, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Schema } from "effect";
+import { ensurePrivateDirectory, writePrivateFileAtomically } from "./private-file";
 import { ALBUM_POLICY_VERSION, CheckpointError, MEDIA_ALLOWLIST_VERSION, type CheckpointState, type MigrationIdentity, type MigrationPlan, type WorkItemId, type WorkItemState } from "./types";
 
 const CHECKPOINT_VERSION = 1;
@@ -91,19 +92,8 @@ export async function loadOrCreateCheckpoint(
 }
 
 export async function saveCheckpoint(checkpointPath: string, state: CheckpointState): Promise<void> {
-  const directory = dirname(checkpointPath);
-  await ensurePrivateDirectory(directory);
-  const tmpPath = `${checkpointPath}.tmp-${process.pid}`;
   const contents = `${JSON.stringify(state, null, 2)}\n`;
-  const handle = await open(tmpPath, "w", 0o600);
-  try {
-    await handle.writeFile(contents);
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  await rename(tmpPath, checkpointPath);
-  await syncDirectory(directory);
+  await writePrivateFileAtomically(checkpointPath, contents);
 }
 
 export function updateWorkItem(
@@ -160,23 +150,6 @@ export async function acquireRunLock(stateDir: string): Promise<() => Promise<vo
   return async () => {
     await rm(lockPath, { force: true });
   };
-}
-
-export async function ensurePrivateDirectory(directory: string): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  try {
-    const info = await stat(directory);
-    if ((info.mode & 0o077) !== 0) {
-      throw new CheckpointError({
-        message: `State directory is group/world accessible: ${directory}`,
-        path: directory,
-      });
-    }
-  } catch (error) {
-    if (error instanceof CheckpointError) {
-      throw error;
-    }
-  }
 }
 
 function mergeNewWorkItems(state: CheckpointState, plan: MigrationPlan): CheckpointState {
@@ -239,18 +212,6 @@ function isAlreadyExists(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function syncDirectory(directory: string): Promise<void> {
-  let handle: FileHandle | undefined;
-  try {
-    handle = await open(directory, "r");
-    await handle.sync();
-  } catch {
-    // Some platforms do not allow directory fsync; the file fsync plus rename is still the best effort.
-  } finally {
-    await handle?.close();
-  }
 }
 
 function parseCheckpoint(value: unknown): CheckpointState {

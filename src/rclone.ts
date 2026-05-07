@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Effect } from "effect";
+import { writePrivateFileAtomically } from "./private-file";
 import { RcloneError, type AlbumName, type ProcessResult, type ProcessRunOptions, type ProcessRunner, type RcloneAlbumResolution, type RuntimeConfig, type WorkItem } from "./types";
 
 export interface RclonePreflight {
@@ -246,7 +247,7 @@ async function writeManifest(workItem: WorkItem, manifestDir: string): Promise<s
     validateManifestPath(workItem.sourceFolder, file.absolutePath);
     return relative(workItem.sourceFolder, file.absolutePath);
   });
-  await Bun.write(manifestPath, `${lines.join("\n")}\n`);
+  await writePrivateFileAtomically(manifestPath, `${lines.join("\n")}\n`);
   return manifestPath;
 }
 

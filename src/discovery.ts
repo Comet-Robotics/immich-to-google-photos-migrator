@@ -1,6 +1,7 @@
 import type { Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
+import { Effect } from "effect";
 import type { DiscoveryResult, FileEntry, LeafFolder } from "./types";
 
 interface DirectoryScan {
@@ -10,27 +11,37 @@ interface DirectoryScan {
 }
 
 export async function discoverSourceTree(sourceRoot: string): Promise<DiscoveryResult> {
-  const resolvedRoot = resolve(sourceRoot);
-  const scan = await scanDirectory(resolvedRoot, resolvedRoot);
-
-  return {
-    sourceRoot: resolvedRoot,
-    ...scan,
-  };
+  return Effect.runPromise(discoverSourceTreeEffect(sourceRoot));
 }
 
-async function scanDirectory(directory: string, sourceRoot: string): Promise<DirectoryScan> {
+export function discoverSourceTreeEffect(sourceRoot: string): Effect.Effect<DiscoveryResult> {
+  return Effect.gen(function* () {
+  const resolvedRoot = resolve(sourceRoot);
+    const scan = yield* scanDirectory(resolvedRoot, resolvedRoot);
+
+    return {
+      sourceRoot: resolvedRoot,
+      ...scan,
+    };
+  });
+}
+
+function scanDirectory(directory: string, sourceRoot: string): Effect.Effect<DirectoryScan> {
+  return Effect.gen(function* () {
   const unreadablePaths: { path: string; reason: string }[] = [];
   let entries: Dirent[];
 
   try {
-    entries = await readdir(directory, { withFileTypes: true });
+      entries = yield* Effect.tryPromise({
+        try: () => readdir(directory, { withFileTypes: true }),
+        catch: (error) => new Error(errorMessage(error)),
+      });
   } catch (error) {
-    return {
-      leafFolders: [],
-      outsideLeafFiles: [],
-      unreadablePaths: [{ path: directory, reason: errorMessage(error) }],
-    };
+      return {
+        leafFolders: [],
+        outsideLeafFiles: [],
+        unreadablePaths: [{ path: directory, reason: errorMessage(error) }],
+      };
   }
 
   const childDirectories = entries
@@ -50,7 +61,7 @@ async function scanDirectory(directory: string, sourceRoot: string): Promise<Dir
     }
 
     const absolutePath = join(directory, entry.name);
-    const file = await fileEntry(sourceRoot, absolutePath);
+      const file = yield* fileEntry(sourceRoot, absolutePath);
     if ("reason" in file) {
       unreadablePaths.push(file);
     } else {
@@ -58,54 +69,66 @@ async function scanDirectory(directory: string, sourceRoot: string): Promise<Dir
     }
   }
 
-  const childScans = await Promise.all(
-    childDirectories.map((childDirectory) => scanDirectory(childDirectory, sourceRoot)),
+    const childScans = yield* Effect.all(
+      childDirectories.map((childDirectory) => scanDirectory(childDirectory, sourceRoot)),
+      { concurrency: "unbounded" },
   );
 
   const childLeafFolders = childScans.flatMap((scan) => scan.leafFolders);
   const childOutsideLeafFiles = childScans.flatMap((scan) => scan.outsideLeafFiles);
   const childUnreadablePaths = childScans.flatMap((scan) => scan.unreadablePaths);
 
-  if (childDirectories.length === 0) {
+    if (childDirectories.length === 0) {
+      return {
+        leafFolders: [
+          {
+            absolutePath: directory,
+            relativePath: relativePath(sourceRoot, directory),
+            basename: basename(directory),
+            files,
+          },
+        ],
+        outsideLeafFiles: childOutsideLeafFiles,
+        unreadablePaths: [...unreadablePaths, ...childUnreadablePaths],
+      };
+    }
+
     return {
-      leafFolders: [
-        {
-          absolutePath: directory,
-          relativePath: relativePath(sourceRoot, directory),
-          basename: basename(directory),
-          files,
-        },
-      ],
-      outsideLeafFiles: childOutsideLeafFiles,
+      leafFolders: childLeafFolders,
+      outsideLeafFiles: [...files, ...childOutsideLeafFiles],
       unreadablePaths: [...unreadablePaths, ...childUnreadablePaths],
     };
-  }
-
-  return {
-    leafFolders: childLeafFolders,
-    outsideLeafFiles: [...files, ...childOutsideLeafFiles],
-    unreadablePaths: [...unreadablePaths, ...childUnreadablePaths],
-  };
+  }).pipe(
+    Effect.catchAll((error) =>
+      Effect.succeed({
+        leafFolders: [],
+        outsideLeafFiles: [],
+        unreadablePaths: [{ path: directory, reason: errorMessage(error) }],
+      })),
+  );
 }
 
-async function fileEntry(
+function fileEntry(
   sourceRoot: string,
   absolutePath: string,
-): Promise<FileEntry | { path: string; reason: string }> {
-  try {
-    const info = await stat(absolutePath);
-    return {
-      absolutePath,
-      relativePath: relativePath(sourceRoot, absolutePath),
-      size: info.size,
-      mtimeMs: info.mtimeMs,
-    };
-  } catch (error) {
-    return {
+): Effect.Effect<FileEntry | { path: string; reason: string }> {
+  return Effect.tryPromise({
+    try: async () => {
+      const info = await stat(absolutePath);
+      return {
+        absolutePath,
+        relativePath: relativePath(sourceRoot, absolutePath),
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+      };
+    },
+    catch: () => ({
       path: absolutePath,
-      reason: errorMessage(error),
-    };
-  }
+      reason: `Unable to stat file: ${absolutePath}`,
+    }),
+  }).pipe(
+    Effect.catchAll((failure) => Effect.succeed(failure)),
+  );
 }
 
 function relativePath(sourceRoot: string, absolutePath: string): string {

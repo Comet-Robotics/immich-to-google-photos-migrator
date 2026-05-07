@@ -1,6 +1,5 @@
-import { open, rename, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { ensurePrivateDirectory } from "./checkpoint";
+import { writePrivateFileAtomicallyHidden } from "./private-file";
 import type { CheckpointState, MigrationPlan, MigrationReport, WorkItem, WorkItemState } from "./types";
 
 export function buildReport(plan: MigrationPlan, checkpoint: CheckpointState): MigrationReport {
@@ -83,20 +82,8 @@ export function renderFinalReport(report: MigrationReport): string {
 }
 
 export async function writeReport(reportDir: string, filename: string, contents: string): Promise<string> {
-  await ensurePrivateDirectory(reportDir);
   const path = join(reportDir, filename);
-  const tmpPath = join(reportDir, `.${filename}.tmp-${process.pid}`);
-  const handle = await open(tmpPath, "w", 0o600);
-  try {
-    await handle.writeFile(contents);
-    await handle.sync();
-    await handle.close();
-    await rename(tmpPath, path);
-  } catch (error) {
-    await handle.close().catch(() => undefined);
-    await rm(tmpPath, { force: true });
-    throw error;
-  }
+  await writePrivateFileAtomicallyHidden(path, contents);
   return path;
 }
 
