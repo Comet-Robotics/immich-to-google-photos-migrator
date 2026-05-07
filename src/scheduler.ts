@@ -30,6 +30,9 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
     const { config } = options;
     const runner = options.runner ?? new BunProcessRunner();
     const rclone = new RcloneClient({ config, runner });
+    yield* Effect.logInfo(
+      `Starting migration run (source=${config.sourceRoot}, remote=${config.remote}, planOnly=${config.planOnly})`,
+    );
     yield* Effect.acquireRelease(
       Effect.tryPromise({
         try: () => acquireRunLock(config.stateDir),
@@ -40,19 +43,29 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
       }),
       (release) => Effect.promise(() => release()),
     );
+    yield* Effect.logDebug(`Acquired run lock in ${config.stateDir}`);
 
+    yield* Effect.logDebug("Running rclone preflight checks");
     const preflight = yield* rclone.preflight();
+    yield* Effect.logDebug(`rclone preflight complete (remote fingerprint: ${preflight.remoteFingerprint})`);
+    yield* Effect.logInfo("Discovering source media tree");
     const discovery = yield* discoverSourceTreeEffect(config.sourceRoot).pipe(
       Effect.mapError((error) => new CheckpointError({ message: String(error) })),
     );
+    yield* Effect.logInfo(
+      `Discovery complete (${discovery.leafFolders.length} leaf folders, ${discovery.outsideLeafFiles.length} non-leaf files, ${discovery.unreadablePaths.length} unreadable paths)`,
+    );
     const plan = buildMigrationPlan(discovery);
+    yield* Effect.logInfo(`Built migration plan (${plan.albums.length} albums, ${plan.workItems.length} work items)`);
     const planReportPath = yield* Effect.tryPromise({
       try: () => writeReport(config.reportDir, "migration-plan.md", renderPlanSummary(plan)),
       catch: (error) => new CheckpointError({ message: String(error) }),
     });
+    yield* Effect.logInfo(`Wrote plan report to ${planReportPath}`);
 
     if (config.planOnly) {
       const checkpoint = initialCheckpoint(plan, config.remote, preflight.remoteFingerprint);
+      yield* Effect.logInfo("Plan-only mode enabled; skipping uploads.");
       return { plan, checkpoint, planReportPath, ok: true };
     }
 
@@ -73,6 +86,7 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
     }
 
     const checkpointPath = join(config.stateDir, "checkpoint.json");
+    yield* Effect.logDebug(`Loading checkpoint state from ${checkpointPath}`);
     let checkpoint = yield* Effect.tryPromise({
       try: () =>
         loadOrCreateCheckpoint(checkpointPath, plan, config.remote, preflight.remoteFingerprint),
@@ -82,7 +96,9 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
       try: () => saveCheckpoint(checkpointPath, checkpoint),
       catch: (error) => new CheckpointError({ message: String(error) }),
     });
+    yield* Effect.logDebug("Checkpoint initialized and persisted");
 
+    yield* Effect.logDebug("Listing destination albums via rclone");
     const visibleAlbums = yield* rclone.listAlbums();
     if (visibleAlbums === "listing-unavailable" && !config.acknowledgeUnknownRemote) {
       return yield* Effect.fail(
@@ -96,6 +112,7 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
       plan.albums.map((album) => album.albumName),
       visibleAlbums,
     );
+    yield* Effect.logInfo(`Resolved ${albumResolutions.length} destination album(s)`);
 
     const duplicate = albumResolutions.find((resolution) => resolution.status === "duplicate-visible");
     if (duplicate) {
@@ -106,12 +123,20 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
       );
     }
 
+    const albumsToCreate = albumResolutions.filter(
+      (resolution) => resolution.status === "needs-create" || resolution.status === "listing-unavailable",
+    );
+    if (albumsToCreate.length > 0) {
+      yield* Effect.logInfo(`Creating ${albumsToCreate.length} destination album(s)`);
+    }
     for (const resolution of albumResolutions) {
       if (resolution.status === "needs-create" || resolution.status === "listing-unavailable") {
         yield* rclone.createAlbum(resolution.albumName);
+        yield* Effect.logDebug(`Created album ${resolution.albumName}`);
       }
     }
 
+    yield* Effect.logInfo(`Starting uploads (${plan.workItems.length} work items, concurrency=${config.concurrency})`);
     checkpoint = yield* runWorkItems({
       config,
       checkpoint,
@@ -126,6 +151,8 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
       catch: (error) => new CheckpointError({ message: String(error) }),
     });
     const ok = report.failed.length === 0 && report.uncertain.length === 0 && report.remaining.length === 0;
+    yield* Effect.logInfo(`Wrote final report to ${finalReportPath}`);
+    yield* Effect.logInfo(`Migration completed with status=${ok ? "ok" : "not-ok"}`);
 
     return { plan, checkpoint, planReportPath, finalReportPath, ok };
   }).pipe(Effect.scoped);
@@ -149,6 +176,8 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
   const grouped = groupByAlbum(options.workItems);
   return Effect.gen(function* () {
     const stateRef = yield* Ref.make(options.checkpoint);
+    const completedRef = yield* Ref.make(0);
+    const totalWorkItems = options.workItems.length;
     const writeQueue = yield* Queue.unbounded<CheckpointWriteRequest>();
     const writerEffect = Effect.forever(
       Effect.gen(function* () {
@@ -194,6 +223,9 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
               continue;
             }
 
+            yield* Effect.logDebug(
+              `Uploading ${item.sourceFolderRelativePath} -> ${item.albumName} (attempt ${(state?.attempts ?? 0) + 1})`,
+            );
             yield* updateAndSave(item, {
               status: "running",
               attempts: (state?.attempts ?? 0) + 1,
@@ -209,6 +241,10 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
                 status: "uncertain",
                 message,
               });
+              const completed = yield* Ref.updateAndGet(completedRef, (count) => count + 1);
+              yield* Effect.logInfo(
+                `Progress ${completed}/${totalWorkItems}: uncertain upload for ${item.sourceFolderRelativePath}`,
+              );
               continue;
             }
 
@@ -234,6 +270,10 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
                 catch: (error) => new CheckpointError({ message: String(error) }),
               });
             }
+            const completed = yield* Ref.updateAndGet(completedRef, (count) => count + 1);
+            yield* Effect.logInfo(
+              `Progress ${completed}/${totalWorkItems}: uploaded ${item.sourceFolderRelativePath} -> ${item.albumName}`,
+            );
           }
         }),
       { concurrency: options.config.concurrency },
