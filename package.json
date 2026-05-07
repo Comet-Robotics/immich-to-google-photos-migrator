@@ -6,7 +6,9 @@
   "scripts": {
     "start": "bun run index.ts",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "build": "bun build --compile --minify --bytecode ./index.ts --outfile out/immich-to-google-photos-migrator --target bun-linux-x64 && chmod +x out/immich-to-google-photos-migrator",
+    "deploy": "rsync -avz --perms out/immich-to-google-photos-migrator $DEPLOY_HOST:/usr/local/bin/immich-to-google-photos-migrator"
   },
   "devDependencies": {
     "@types/bun": "latest"
