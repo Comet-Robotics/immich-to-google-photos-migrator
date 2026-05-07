@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { basename, extname, resolve } from "node:path";
 import { Schema } from "effect";
 import { ConfigError, type RuntimeConfig } from "./types";
 
@@ -138,9 +138,9 @@ export function parseRuntimeConfig(raw: RawRuntimeConfig): RuntimeConfig {
   }
 }
 
-export function usage(): string {
+export function usage(command = inferCommandFromProcessArgv()): string {
   return [
-    "Usage: bun run index.ts --source <immich-library-root> --remote <rclone-remote> [options]",
+    `Usage: ${command} --source <immich-library-root> --remote <rclone-remote> [options]`,
     "",
     "Options:",
     "  --state-dir <path>                 Directory for private checkpoint state",
@@ -154,6 +154,15 @@ export function usage(): string {
     "  --retry-uncertain                  Retry work that may have partially uploaded previously",
     "  --yes                              Apply all explicit acknowledgements",
   ].join("\n");
+}
+
+export function inferCommandFromProcessArgv(argv: readonly string[] = process.argv): string {
+  const executableName = basename(argv[0] ?? "immich-to-google-photos-migrator");
+  const scriptPath = argv[1];
+  if (scriptPath && looksLikeScriptPath(scriptPath)) {
+    return `${executableName} ${basename(scriptPath)}`;
+  }
+  return executableName;
 }
 
 function isBooleanFlag(name: string): boolean {
@@ -177,4 +186,11 @@ function parseConcurrency(value: string | undefined): number {
     throw new ConfigError({ message: "--concurrency must be an integer between 1 and 16" });
   }
   return parsed;
+}
+
+function looksLikeScriptPath(value: string): boolean {
+  if (value.startsWith("-")) {
+    return false;
+  }
+  return [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx"].includes(extname(value));
 }

@@ -73,7 +73,7 @@ const cliCommand = Command.make(
 );
 
 export function runCliEffect(argv = process.argv.slice(2)): Effect.Effect<number, never, never> {
-  if (argv.includes("--help") || argv.includes("-h")) {
+  if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
     return Console.log(usage()).pipe(Effect.as(0), Effect.orDie);
   }
 

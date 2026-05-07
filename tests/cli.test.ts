@@ -1,6 +1,18 @@
-import { describe, expect, test } from "bun:test";
-import { parseConfig } from "../src/config";
+import { describe, expect, spyOn, test } from "bun:test";
+import { runCli } from "../src/cli";
+import { inferCommandFromProcessArgv, parseConfig, usage } from "../src/config";
 import { ConfigError } from "../src/types";
+
+describe("runCli", () => {
+  test("exits 0 with no arguments", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(await runCli([])).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
 
 describe("parseConfig", () => {
   test("normalizes required inputs and defaults", () => {
@@ -61,5 +73,34 @@ describe("parseConfig", () => {
     expect(config.acknowledgeNonLeafMedia).toBe(true);
     expect(config.acknowledgeUnreadablePaths).toBe(true);
     expect(config.acknowledgeUnknownRemote).toBe(true);
+  });
+});
+
+describe("usage", () => {
+  test("uses executable and script when run via runtime", () => {
+    const command = inferCommandFromProcessArgv([
+      "/opt/homebrew/bin/bun",
+      "/repo/index.ts",
+      "--source",
+      "library",
+    ]);
+
+    expect(command).toBe("bun index.ts");
+    expect(usage(command)).toContain(
+      "Usage: bun index.ts --source <immich-library-root> --remote <rclone-remote> [options]",
+    );
+  });
+
+  test("uses binary name when run as compiled executable", () => {
+    const command = inferCommandFromProcessArgv([
+      "/repo/out/immich-to-google-photos-migrator",
+      "--source",
+      "library",
+    ]);
+
+    expect(command).toBe("immich-to-google-photos-migrator");
+    expect(usage(command)).toContain(
+      "Usage: immich-to-google-photos-migrator --source <immich-library-root> --remote <rclone-remote> [options]",
+    );
   });
 });
