@@ -223,6 +223,10 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
               continue;
             }
 
+            const nextPosition = (yield* Ref.get(completedRef)) + 1;
+            yield* Effect.logInfo(
+              `Progress ${nextPosition}/${totalWorkItems}: starting upload ${item.sourceFolderRelativePath} -> ${item.albumName}`,
+            );
             yield* Effect.logDebug(
               `Uploading ${item.sourceFolderRelativePath} -> ${item.albumName} (attempt ${(state?.attempts ?? 0) + 1})`,
             );
@@ -278,6 +282,9 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
         }),
       { concurrency: options.config.concurrency },
     );
+
+    const completed = yield* Ref.get(completedRef);
+    yield* Effect.logInfo(`Progress ${completed}/${totalWorkItems}: upload stream finished`);
 
     return yield* Ref.get(stateRef);
   }).pipe(Effect.scoped);
