@@ -13,16 +13,21 @@ describe("reports", () => {
       await fixture.writeFile("event/metadata.json");
       await fixture.writeFile("empty/info.json");
       const plan = buildMigrationPlan(await discoverSourceTree(fixture.root));
-      const checkpoint = updateWorkItem(initialCheckpoint(plan, "gphotos"), plan.workItems[0]!.id, {
+      const checkpoint = updateWorkItem(initialCheckpoint(plan, "gphotos", "fingerprint"), plan.workItems[0]!.id, {
         status: "failed",
         attempts: 1,
         message: "rclone failed",
       });
       const report = buildReport(plan, checkpoint);
+      const planSummary = renderPlanSummary(plan);
+      const finalReport = renderFinalReport(report);
 
-      expect(renderPlanSummary(plan)).toContain("Skipped unsupported files: 2");
-      expect(renderFinalReport(report)).toContain("Failed: 1");
-      expect(renderFinalReport(report)).toContain("No-supported-media folders: 1");
+      expect(planSummary).toContain("Skipped unsupported files: 2");
+      expect(planSummary).toContain("event/metadata.json: unsupported-extension");
+      expect(planSummary).not.toContain(fixture.root);
+      expect(finalReport).toContain("Failed: 1");
+      expect(finalReport).toContain("Remaining: 0");
+      expect(finalReport).toContain("No-supported-media folders: 1");
     } finally {
       await fixture.cleanup();
     }

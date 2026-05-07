@@ -37,7 +37,7 @@ The plan report includes:
 - Media found outside leaf folders
 - Leaf folders with no supported media
 
-If media is found outside leaf folders, the upload path stops unless you explicitly acknowledge that omission:
+Plan-only runs always write the report so you can inspect what would happen. Uploads stop if media is found outside leaf folders unless you explicitly acknowledge that omission:
 
 ```bash
 bun run start --source /path/to/library --remote gphotos --plan-only --acknowledge-non-leaf-media
@@ -57,7 +57,9 @@ Useful options:
 - `--report-dir <path>`: report output directory
 - `--concurrency <n>`: album-parallel upload workers, default `2`
 - `--rclone-binary <path>`: explicit rclone executable, default `rclone`
+- `--acknowledge-unreadable-paths`: continue when some source paths could not be read
 - `--acknowledge-unknown-remote`: continue when rclone cannot prove album listing or account identity
+- `--retry-uncertain`: retry work that may have partially uploaded in a previous run
 - `--yes`: apply all explicit acknowledgements
 
 Uploads are additive. The tool uses rclone copy-style behavior and does not delete Google Photos media or albums.
@@ -66,7 +68,7 @@ Uploads are additive. The tool uses rclone copy-style behavior and does not dele
 
 The migrator writes checkpoint state after each successful upload work item. Re-run the same command with the same state directory to continue after an interruption.
 
-Completed work is skipped only when the checkpoint identity still matches the current source root, remote, album policy, media allowlist, and planned file manifests. Failed or uncertain work remains visible in the final report and is eligible to retry.
+Completed work is skipped only when the checkpoint identity still matches the current source root, remote name, rclone remote config fingerprint, album policy, media allowlist, and planned file manifests. Work left `running` by an interrupted process is normalized to `uncertain` on resume and is not retried unless you pass `--retry-uncertain`.
 
 Only one run may use a state directory at a time. If a previous process was interrupted, inspect the lock file and active processes before removing the lock manually.
 
@@ -104,5 +106,6 @@ Do not use a large source tree until this small check behaves as expected for yo
 - Folder matching is exact. `SRP photos all` and `SRP Photos All` are different albums.
 - Unsupported files are skipped before upload and reported.
 - Leaf folders with no supported media do not create empty albums.
-- Media outside leaf folders is reported and requires acknowledgement before upload.
+- Media outside leaf folders and unreadable source paths are reported and require acknowledgement before upload.
+- Source files are re-stat checked immediately before upload; changed files are marked uncertain rather than uploaded under a stale plan.
 - The tool does not normalize folder names, deduplicate media, delete Google Photos content, or integrate directly with the Google Photos API.

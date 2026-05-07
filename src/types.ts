@@ -43,7 +43,9 @@ export interface RuntimeConfig {
   readonly planOnly: boolean;
   readonly yes: boolean;
   readonly acknowledgeNonLeafMedia: boolean;
+  readonly acknowledgeUnreadablePaths: boolean;
   readonly acknowledgeUnknownRemote: boolean;
+  readonly retryUncertain: boolean;
   readonly rcloneBinary: string;
 }
 
@@ -65,7 +67,7 @@ export interface DiscoveryResult {
   readonly sourceRoot: AbsolutePath;
   readonly leafFolders: readonly LeafFolder[];
   readonly outsideLeafFiles: readonly FileEntry[];
-  readonly unreadablePaths: readonly { readonly path: AbsolutePath; readonly reason: string }[];
+  readonly unreadablePaths: readonly { readonly path: string; readonly reason: string }[];
 }
 
 export type MediaKind = "image" | "video";
@@ -76,7 +78,7 @@ export interface SupportedMediaFile extends FileEntry {
 }
 
 export interface SkippedFile extends FileEntry {
-  readonly reason: "unsupported-extension" | "outside-leaf" | "unreadable";
+  readonly reason: "unsupported-extension" | "outside-leaf" | "unreadable" | "invalid-path";
   readonly detail: string;
 }
 
@@ -134,6 +136,7 @@ export interface WorkItemState {
 export interface MigrationIdentity {
   readonly sourceRoot: AbsolutePath;
   readonly remote: string;
+  readonly remoteFingerprint: string;
   readonly albumPolicyVersion: number;
   readonly mediaAllowlistVersion: number;
   readonly planFingerprint: string;
@@ -180,4 +183,5 @@ export interface MigrationReport {
   readonly skippedFiles: readonly SkippedFile[];
   readonly outsideLeafMedia: readonly SupportedMediaFile[];
   readonly noSupportedMediaFolders: readonly NoSupportedMediaFolder[];
+  readonly unreadablePaths: readonly { readonly path: AbsolutePath; readonly reason: string }[];
 }

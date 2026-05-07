@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import type { DiscoveryResult, FileEntry, LeafFolder } from "./types";
@@ -20,7 +21,7 @@ export async function discoverSourceTree(sourceRoot: string): Promise<DiscoveryR
 
 async function scanDirectory(directory: string, sourceRoot: string): Promise<DirectoryScan> {
   const unreadablePaths: { path: string; reason: string }[] = [];
-  let entries;
+  let entries: Dirent[];
 
   try {
     entries = await readdir(directory, { withFileTypes: true });

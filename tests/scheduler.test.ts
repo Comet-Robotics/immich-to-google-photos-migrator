@@ -19,7 +19,7 @@ describe("runMigration", () => {
 
       expect(result.plan.workItems).toHaveLength(1);
       expect(result.finalReportPath).toBeUndefined();
-      expect(runner.calls.map((call) => call.command[1])).toEqual(["version"]);
+      expect(runner.calls.map((call) => call.command[1])).toEqual(["version", "config"]);
     } finally {
       await fixture.cleanup();
     }
@@ -50,7 +50,26 @@ describe("runMigration", () => {
     }
   });
 
-  test("blocks outside-leaf media unless acknowledged", async () => {
+  test("plan-only writes report when outside-leaf media needs acknowledgement", async () => {
+    const fixture = await createTempFixture();
+    try {
+      await fixture.writeFile("2024/outside.jpg");
+      await fixture.writeFile("2024/day/inside.jpg");
+
+      const result = await runMigration({
+        config: config(fixture.root, { planOnly: true }),
+        runner: new FakeProcessRunner([{}]),
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.finalReportPath).toBeUndefined();
+      expect(result.plan.outsideLeafMedia).toHaveLength(1);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("blocks upload when outside-leaf media is not acknowledged", async () => {
     const fixture = await createTempFixture();
     try {
       await fixture.writeFile("2024/outside.jpg");
@@ -58,7 +77,7 @@ describe("runMigration", () => {
 
       await expect(
         runMigration({
-          config: config(fixture.root, { planOnly: true }),
+          config: config(fixture.root),
           runner: new FakeProcessRunner([{}]),
         }),
       ).rejects.toThrow("Media files were found outside leaf folders");
@@ -73,6 +92,7 @@ describe("runMigration", () => {
       await fixture.writeFile("event/photo.jpg");
       const runner = new FakeProcessRunner([
         {},
+        {},
         { stdout: "ImmichBackup: event/\nImmichBackup: event/\n" },
       ]);
 
@@ -82,6 +102,48 @@ describe("runMigration", () => {
           runner,
         }),
       ).rejects.toThrow("Duplicate visible destination album");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("copy failure produces report and unsuccessful result", async () => {
+    const fixture = await createTempFixture();
+    try {
+      await fixture.writeFile("event/photo.jpg");
+      const runner = new FakeProcessRunner([
+        {},
+        { stdout: "" },
+        {},
+        {},
+        { exitCode: 1, stderr: "network failure" },
+      ]);
+
+      const result = await runMigration({
+        config: config(fixture.root),
+        runner,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(Object.values(result.checkpoint.workItems)[0]?.status).toBe("uncertain");
+      expect(result.finalReportPath).toBe(`${fixture.root}/reports/migration-report.md`);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("blocks upload when source root is unreadable", async () => {
+    const fixture = await createTempFixture();
+    try {
+      await expect(
+        runMigration({
+          config: config(`${fixture.root}/missing`, {
+            stateDir: join(fixture.root, "state"),
+            reportDir: join(fixture.root, "reports"),
+          }),
+          runner: new FakeProcessRunner([{}]),
+        }),
+      ).rejects.toThrow("Some source paths could not be read");
     } finally {
       await fixture.cleanup();
     }
@@ -98,7 +160,9 @@ function config(root: string, overrides: Partial<RuntimeConfig> = {}): RuntimeCo
     planOnly: false,
     yes: false,
     acknowledgeNonLeafMedia: false,
+    acknowledgeUnreadablePaths: false,
     acknowledgeUnknownRemote: false,
+    retryUncertain: false,
     rcloneBinary: "rclone",
     ...overrides,
   };

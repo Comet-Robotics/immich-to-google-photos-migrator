@@ -1,9 +1,17 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { RcloneError, type AlbumName, type ProcessResult, type ProcessRunOptions, type ProcessRunner, type RcloneAlbumResolution, type RuntimeConfig, type WorkItem } from "./types";
 
+export interface RclonePreflight {
+  readonly version: ProcessResult;
+  readonly remoteFingerprint: string;
+}
+
 export class BunProcessRunner implements ProcessRunner {
   async run(command: readonly string[], options: ProcessRunOptions = {}): Promise<ProcessResult> {
+    let timedOut = false;
+    let signalCode: string | undefined;
     const proc = Bun.spawn([...command], {
       cwd: options.cwd,
       env: options.env,
@@ -14,7 +22,13 @@ export class BunProcessRunner implements ProcessRunner {
 
     const timeout = options.timeoutMs
       ? setTimeout(() => {
+          timedOut = true;
+          signalCode = "SIGTERM";
           proc.kill("SIGTERM");
+          setTimeout(() => {
+            signalCode = "SIGKILL";
+            proc.kill("SIGKILL");
+          }, 5_000);
         }, options.timeoutMs)
       : undefined;
 
@@ -30,6 +44,8 @@ export class BunProcessRunner implements ProcessRunner {
         exitCode,
         stdout,
         stderr,
+        timedOut,
+        signalCode,
       };
     } finally {
       if (timeout) {
@@ -53,14 +69,31 @@ export class RcloneClient {
     this.runner = options.runner;
   }
 
-  async preflight(): Promise<ProcessResult> {
+  async preflight(): Promise<RclonePreflight> {
     validateRemoteName(this.config.remote);
     validateBinary(this.config.rcloneBinary);
-    const result = await this.run([this.config.rcloneBinary, "version"]);
-    if (result.exitCode !== 0) {
-      throw rcloneFailure("Unable to run rclone", result);
+    const version = await this.run([this.config.rcloneBinary, "version"]);
+    if (version.exitCode !== 0) {
+      throw rcloneFailure("Unable to run rclone", version);
     }
-    return result;
+
+    const remoteConfig = await this.run([
+      this.config.rcloneBinary,
+      "config",
+      "show",
+      this.config.remote,
+    ]);
+    if (remoteConfig.exitCode !== 0) {
+      if (!this.config.acknowledgeUnknownRemote) {
+        throw rcloneFailure("Unable to fingerprint rclone remote", remoteConfig);
+      }
+      return { version, remoteFingerprint: "unverified" };
+    }
+
+    return {
+      version,
+      remoteFingerprint: fingerprint(remoteConfig.stdout),
+    };
   }
 
   async listAlbums(): Promise<readonly string[] | "listing-unavailable"> {
@@ -118,6 +151,7 @@ export class RcloneClient {
 
   async copyWorkItem(workItem: WorkItem, manifestDir: string): Promise<void> {
     validateAlbumName(workItem.albumName);
+    await validateFilesUnchanged(workItem);
     const manifestPath = await writeManifest(workItem, manifestDir);
     const result = await this.run([
       this.config.rcloneBinary,
@@ -197,8 +231,19 @@ async function writeManifest(workItem: WorkItem, manifestDir: string): Promise<s
     validateManifestPath(workItem.sourceFolder, file.absolutePath);
     return relative(workItem.sourceFolder, file.absolutePath);
   });
-  await writeFile(manifestPath, `${lines.join("\n")}\n`, { mode: 0o600 });
+  await Bun.write(manifestPath, `${lines.join("\n")}\n`);
   return manifestPath;
+}
+
+async function validateFilesUnchanged(workItem: WorkItem): Promise<void> {
+  for (const file of workItem.supportedFiles) {
+    const current = await stat(file.absolutePath);
+    if (current.size !== file.size || Math.trunc(current.mtimeMs) !== Math.trunc(file.mtimeMs)) {
+      throw new RcloneError({
+        message: `Source file changed after planning: ${file.relativePath}`,
+      });
+    }
+  }
 }
 
 function validateManifestPath(sourceFolder: string, filePath: string): void {
@@ -228,4 +273,8 @@ function rcloneFailure(message: string, result: ProcessResult): RcloneError {
 
 function sanitizeOutput(output: string): string {
   return output.replace(/token[=:]\S+/gi, "token=<redacted>").slice(0, 4000);
+}
+
+function fingerprint(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }

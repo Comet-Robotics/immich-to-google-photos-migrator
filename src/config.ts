@@ -3,6 +3,14 @@ import { ConfigError, type RuntimeConfig } from "./types";
 
 const DEFAULT_CONCURRENCY = 2;
 const DEFAULT_RCLONE_BINARY = "rclone";
+const VALUE_OPTIONS = new Set([
+  "source",
+  "remote",
+  "state-dir",
+  "report-dir",
+  "concurrency",
+  "rclone-binary",
+]);
 
 export function parseConfig(argv: readonly string[], cwd = process.cwd()): RuntimeConfig {
   const args = [...argv];
@@ -19,7 +27,10 @@ export function parseConfig(argv: readonly string[], cwd = process.cwd()): Runti
       throw new ConfigError({ message: `Unexpected positional argument: ${arg}` });
     }
 
-    const [rawName, inlineValue] = arg.slice(2).split("=", 2);
+    const option = arg.slice(2);
+    const equalsIndex = option.indexOf("=");
+    const rawName = equalsIndex === -1 ? option : option.slice(0, equalsIndex);
+    const inlineValue = equalsIndex === -1 ? undefined : option.slice(equalsIndex + 1);
     if (!rawName) {
       throw new ConfigError({ message: `Invalid option: ${arg}` });
     }
@@ -30,6 +41,10 @@ export function parseConfig(argv: readonly string[], cwd = process.cwd()): Runti
       }
       flags.add(rawName);
       continue;
+    }
+
+    if (!VALUE_OPTIONS.has(rawName)) {
+      throw new ConfigError({ message: `Unknown option --${rawName}` });
     }
 
     const value = inlineValue ?? args[index + 1];
@@ -65,7 +80,9 @@ export function parseConfig(argv: readonly string[], cwd = process.cwd()): Runti
     planOnly: flags.has("plan-only"),
     yes: flags.has("yes"),
     acknowledgeNonLeafMedia: flags.has("acknowledge-non-leaf-media") || flags.has("yes"),
+    acknowledgeUnreadablePaths: flags.has("acknowledge-unreadable-paths") || flags.has("yes"),
     acknowledgeUnknownRemote: flags.has("acknowledge-unknown-remote") || flags.has("yes"),
+    retryUncertain: flags.has("retry-uncertain"),
     rcloneBinary: values.get("rclone-binary") ?? DEFAULT_RCLONE_BINARY,
   };
 }
@@ -81,7 +98,9 @@ export function usage(): string {
     "  --rclone-binary <path>             rclone executable to run (default: rclone)",
     "  --plan-only                        Build and report the plan without uploading",
     "  --acknowledge-non-leaf-media       Continue when media exists outside leaf folders",
+    "  --acknowledge-unreadable-paths     Continue when paths could not be read",
     "  --acknowledge-unknown-remote       Continue when remote identity/listing is limited",
+    "  --retry-uncertain                  Retry work that may have partially uploaded previously",
     "  --yes                              Apply all explicit acknowledgements",
   ].join("\n");
 }
@@ -91,7 +110,9 @@ function isBooleanFlag(name: string): boolean {
     "plan-only",
     "yes",
     "acknowledge-non-leaf-media",
+    "acknowledge-unreadable-paths",
     "acknowledge-unknown-remote",
+    "retry-uncertain",
   ].includes(name);
 }
 

@@ -46,10 +46,6 @@ export function classifyMedia(file: FileEntry): SupportedMediaFile | SkippedFile
   };
 }
 
-export function isSupportedMedia(file: FileEntry): file is SupportedMediaFile {
-  return "kind" in file && typeof file.kind === "string";
-}
-
 export function mediaKindForExtension(extension: string): MediaKind | undefined {
   if (IMAGE_EXTENSIONS.has(extension)) {
     return "image";

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -17,7 +17,7 @@ export async function createTempFixture(prefix = "immich-gphotos-"): Promise<Tem
     async writeFile(relativePath: string, contents = "fixture") {
       const absolutePath = join(root, relativePath);
       await mkdir(dirname(absolutePath), { recursive: true });
-      await writeFile(absolutePath, contents);
+      await Bun.write(absolutePath, contents);
       return absolutePath;
     },
     async mkdir(relativePath: string) {

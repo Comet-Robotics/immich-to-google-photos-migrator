@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { Effect } from "effect";
-import { acquireRunLock, loadOrCreateCheckpoint, saveCheckpoint, updateWorkItem } from "./checkpoint";
+import { acquireRunLock, initialCheckpoint, loadOrCreateCheckpoint, saveCheckpoint, updateWorkItem } from "./checkpoint";
 import { discoverSourceTree } from "./discovery";
 import { buildMigrationPlan } from "./plan";
 import { buildReport, renderFinalReport, renderPlanSummary, writeReport } from "./report";
@@ -18,6 +18,7 @@ export interface RunMigrationResult {
   readonly checkpoint: CheckpointState;
   readonly planReportPath: string;
   readonly finalReportPath?: string;
+  readonly ok: boolean;
 }
 
 export async function runMigration(options: RunMigrationOptions): Promise<RunMigrationResult> {
@@ -33,9 +34,21 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
     const releaseLock = await acquireRunLock(config.stateDir);
 
     try {
-      await rclone.preflight();
+      const preflight = await rclone.preflight();
       const discovery = await discoverSourceTree(config.sourceRoot);
       const plan = buildMigrationPlan(discovery);
+      const planReportPath = await writeReport(config.reportDir, "migration-plan.md", renderPlanSummary(plan));
+
+      if (config.planOnly) {
+        const checkpoint = initialCheckpoint(plan, config.remote, preflight.remoteFingerprint);
+        return { plan, checkpoint, planReportPath, ok: true };
+      }
+
+      if (plan.unreadablePaths.length > 0 && !config.acknowledgeUnreadablePaths) {
+        throw new CheckpointError({
+          message: "Some source paths could not be read. Review the plan report and re-run with --acknowledge-unreadable-paths to omit them.",
+        });
+      }
 
       if (plan.outsideLeafMedia.length > 0 && !config.acknowledgeNonLeafMedia) {
         throw new CheckpointError({
@@ -43,14 +56,14 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
         });
       }
 
-      const planReportPath = await writeReport(config.reportDir, "migration-plan.md", renderPlanSummary(plan));
       const checkpointPath = join(config.stateDir, "checkpoint.json");
-      let checkpoint = await loadOrCreateCheckpoint(checkpointPath, plan, config.remote);
+      let checkpoint = await loadOrCreateCheckpoint(
+        checkpointPath,
+        plan,
+        config.remote,
+        preflight.remoteFingerprint,
+      );
       await saveCheckpoint(checkpointPath, checkpoint);
-
-      if (config.planOnly) {
-        return { plan, checkpoint, planReportPath };
-      }
 
       const visibleAlbums = await rclone.listAlbums();
       if (visibleAlbums === "listing-unavailable" && !config.acknowledgeUnknownRemote) {
@@ -72,7 +85,7 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
       }
 
       for (const resolution of albumResolutions) {
-        if (resolution.status === "needs-create") {
+        if (resolution.status === "needs-create" || resolution.status === "listing-unavailable") {
           await rclone.createAlbum(resolution.albumName);
         }
       }
@@ -87,8 +100,9 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
 
       const report = buildReport(plan, checkpoint);
       const finalReportPath = await writeReport(config.reportDir, "migration-report.md", renderFinalReport(report));
+      const ok = report.failed.length === 0 && report.uncertain.length === 0 && report.remaining.length === 0;
 
-      return { plan, checkpoint, planReportPath, finalReportPath };
+      return { plan, checkpoint, planReportPath, finalReportPath, ok };
     } finally {
       await releaseLock();
     }
@@ -131,6 +145,9 @@ async function runWorkItems(options: RunWorkItemsOptions): Promise<CheckpointSta
             if (state?.status === "complete") {
               continue;
             }
+            if (state?.status === "uncertain" && !options.config.retryUncertain) {
+              continue;
+            }
 
             await updateAndSave(item, {
               status: "running",
@@ -139,15 +156,27 @@ async function runWorkItems(options: RunWorkItemsOptions): Promise<CheckpointSta
 
             try {
               await options.rclone.copyWorkItem(item, join(options.config.stateDir, "manifests"));
+            } catch (error) {
+              await updateAndSave(item, {
+                status: "uncertain",
+                message: error instanceof Error ? error.message : String(error),
+              });
+              continue;
+            }
+
+            try {
               await updateAndSave(item, {
                 status: "complete",
                 message: "rclone copy completed",
               });
             } catch (error) {
-              await updateAndSave(item, {
-                status: "failed",
-                message: error instanceof Error ? error.message : String(error),
+              checkpoint = updateWorkItem(checkpoint, item.id, {
+                status: "uncertain",
+                message: `rclone copy completed but checkpoint persistence failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
               });
+              await saveCheckpoint(options.checkpointPath, checkpoint);
             }
           }
         }),
@@ -157,6 +186,7 @@ async function runWorkItems(options: RunWorkItemsOptions): Promise<CheckpointSta
 
   return checkpoint;
 }
+
 
 function groupByAlbum(workItems: readonly WorkItem[]): Map<string, WorkItem[]> {
   const grouped = new Map<string, WorkItem[]>();

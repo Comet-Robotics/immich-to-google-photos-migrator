@@ -15,7 +15,11 @@ describe("fake rclone integration", () => {
       const firstRunner = new FakeProcessRunner([{}, { stdout: "" }, {}, {}, {}]);
 
       const first = await runMigration({ config: config(fixture.root), runner: firstRunner });
-      const secondRunner = new FakeProcessRunner([{}, { stdout: "ImmichBackup: SRP photos all/\n" }]);
+      const secondRunner = new FakeProcessRunner([
+        {},
+        { stdout: "" },
+        { stdout: "ImmichBackup: SRP photos all/\n" },
+      ]);
       const second = await runMigration({ config: config(fixture.root), runner: secondRunner });
 
       expect(first.plan.albums).toHaveLength(1);
@@ -59,7 +63,9 @@ function config(root: string): RuntimeConfig {
     planOnly: false,
     yes: false,
     acknowledgeNonLeafMedia: false,
+    acknowledgeUnreadablePaths: false,
     acknowledgeUnknownRemote: false,
+    retryUncertain: false,
     rcloneBinary: "rclone",
   };
 }

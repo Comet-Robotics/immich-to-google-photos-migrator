@@ -17,7 +17,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     } else {
       console.log("Plan-only run complete; no uploads performed.");
     }
-    return 0;
+    return result.ok ? 0 : 1;
   } catch (error) {
     console.error(renderError(error));
     return 1;

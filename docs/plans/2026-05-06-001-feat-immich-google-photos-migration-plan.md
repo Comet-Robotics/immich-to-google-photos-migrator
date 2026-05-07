@@ -1,7 +1,7 @@
 ---
 title: "feat: Build Immich to Google Photos migrator"
 type: feat
-status: active
+status: completed
 date: 2026-05-06
 origin: docs/brainstorms/immich-google-photos-migration-requirements.md
 ---

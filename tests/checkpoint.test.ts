@@ -12,13 +12,13 @@ describe("checkpoint state", () => {
       await fixture.writeFile("event/photo.jpg");
       const plan = buildMigrationPlan(await discoverSourceTree(fixture.root));
       const checkpointPath = join(fixture.root, "state/checkpoint.json");
-      const complete = updateWorkItem(initialCheckpoint(plan, "gphotos"), plan.workItems[0]!.id, {
+      const complete = updateWorkItem(initialCheckpoint(plan, "gphotos", "fingerprint"), plan.workItems[0]!.id, {
         status: "complete",
         attempts: 1,
       });
 
       await saveCheckpoint(checkpointPath, complete);
-      const loaded = await loadOrCreateCheckpoint(checkpointPath, plan, "gphotos");
+      const loaded = await loadOrCreateCheckpoint(checkpointPath, plan, "gphotos", "fingerprint");
 
       expect(loaded.workItems[plan.workItems[0]!.id]?.status).toBe("complete");
     } finally {
@@ -32,10 +32,65 @@ describe("checkpoint state", () => {
       await fixture.writeFile("event/photo.jpg");
       const plan = buildMigrationPlan(await discoverSourceTree(fixture.root));
       const checkpointPath = join(fixture.root, "state/checkpoint.json");
-      await saveCheckpoint(checkpointPath, initialCheckpoint(plan, "gphotos"));
+      await saveCheckpoint(checkpointPath, initialCheckpoint(plan, "gphotos", "fingerprint"));
 
-      await expect(loadOrCreateCheckpoint(checkpointPath, plan, "other")).rejects.toThrow(
+      await expect(loadOrCreateCheckpoint(checkpointPath, plan, "other", "fingerprint")).rejects.toThrow(
         "Checkpoint identity mismatch",
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("refuses to resume when remote fingerprint changes", async () => {
+    const fixture = await createTempFixture();
+    try {
+      await fixture.writeFile("event/photo.jpg");
+      const plan = buildMigrationPlan(await discoverSourceTree(fixture.root));
+      const checkpointPath = join(fixture.root, "state/checkpoint.json");
+      await saveCheckpoint(checkpointPath, initialCheckpoint(plan, "gphotos", "fingerprint-a"));
+
+      await expect(loadOrCreateCheckpoint(checkpointPath, plan, "gphotos", "fingerprint-b")).rejects.toThrow(
+        "Checkpoint identity mismatch",
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+
+  test("normalizes stale running work to uncertain on resume", async () => {
+    const fixture = await createTempFixture();
+    try {
+      await fixture.writeFile("event/photo.jpg");
+      const plan = buildMigrationPlan(await discoverSourceTree(fixture.root));
+      const checkpointPath = join(fixture.root, "state/checkpoint.json");
+      await saveCheckpoint(
+        checkpointPath,
+        updateWorkItem(initialCheckpoint(plan, "gphotos", "fingerprint"), plan.workItems[0]!.id, {
+          status: "running",
+          attempts: 1,
+        }),
+      );
+
+      const loaded = await loadOrCreateCheckpoint(checkpointPath, plan, "gphotos", "fingerprint");
+
+      expect(loaded.workItems[plan.workItems[0]!.id]?.status).toBe("uncertain");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("rejects malformed checkpoint JSON", async () => {
+    const fixture = await createTempFixture();
+    try {
+      await fixture.writeFile("event/photo.jpg");
+      const plan = buildMigrationPlan(await discoverSourceTree(fixture.root));
+      const checkpointPath = join(fixture.root, "state/checkpoint.json");
+      await fixture.writeFile("state/checkpoint.json", JSON.stringify({ version: 1, workItems: {} }));
+
+      await expect(loadOrCreateCheckpoint(checkpointPath, plan, "gphotos", "fingerprint")).rejects.toThrow(
+        "invalid identity",
       );
     } finally {
       await fixture.cleanup();

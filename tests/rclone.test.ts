@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { RcloneClient, remotePath, validateRemoteName } from "../src/rclone";
 import type { RuntimeConfig, WorkItem } from "../src/types";
 import { createTempFixture } from "./helpers/temp-fixtures";
@@ -15,7 +15,7 @@ describe("rclone boundary", () => {
 
       await client.listAlbums();
       await client.createAlbum("ImmichBackup: Event");
-      await client.copyWorkItem(workItem(fixture.root, sourceFile), `${fixture.root}/state/manifests`);
+      await client.copyWorkItem(await workItem(fixture.root, sourceFile), `${fixture.root}/state/manifests`);
 
       expect(runner.calls[0]?.command).toEqual(["rclone", "lsf", "gphotos:album", "--dirs-only"]);
       expect(runner.calls[1]?.command).toEqual(["rclone", "mkdir", "gphotos:album/ImmichBackup: Event"]);
@@ -39,7 +39,7 @@ describe("rclone boundary", () => {
       const runner = new FakeProcessRunner([{}]);
       const client = new RcloneClient({ config: config(fixture.root), runner });
 
-      await client.copyWorkItem(workItem(fixture.root, supported), `${fixture.root}/state/manifests`);
+      await client.copyWorkItem(await workItem(fixture.root, supported), `${fixture.root}/state/manifests`);
 
       const manifestFlagIndex = runner.calls[0]?.command.indexOf("--files-from-raw") ?? -1;
       const manifestPath = runner.calls[0]?.command[manifestFlagIndex + 1];
@@ -47,7 +47,7 @@ describe("rclone boundary", () => {
       if (!manifestPath) {
         throw new Error("manifest path was not captured");
       }
-      const manifest = await readFile(manifestPath, "utf8");
+      const manifest = await Bun.file(manifestPath).text();
       expect(manifest).toContain("photo.jpg");
       expect(manifest).not.toContain("metadata.json");
     } finally {
@@ -90,12 +90,15 @@ function config(root: string): RuntimeConfig {
     planOnly: false,
     yes: false,
     acknowledgeNonLeafMedia: false,
+    acknowledgeUnreadablePaths: false,
     acknowledgeUnknownRemote: false,
+    retryUncertain: false,
     rcloneBinary: "rclone",
   };
 }
 
-function workItem(root: string, supportedFile: string): WorkItem {
+async function workItem(root: string, supportedFile: string): Promise<WorkItem> {
+  const fileStat = await stat(supportedFile);
   return {
     id: "work",
     albumKey: "Event",
@@ -107,8 +110,8 @@ function workItem(root: string, supportedFile: string): WorkItem {
       {
         absolutePath: supportedFile,
         relativePath: "source/photo.jpg",
-        size: 1,
-        mtimeMs: 1,
+        size: fileStat.size,
+        mtimeMs: fileStat.mtimeMs,
         kind: "image",
         extension: ".jpg",
       },

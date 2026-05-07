@@ -12,6 +12,15 @@ export function buildMigrationPlan(discovery: DiscoveryResult): MigrationPlan {
     const skipped: SkippedFile[] = [];
 
     for (const file of [...folder.files].sort(compareRelativePath)) {
+      if (hasControlCharacters(file.relativePath)) {
+        skipped.push({
+          ...file,
+          reason: "invalid-path",
+          detail: "File path contains control characters unsupported by manifest upload",
+        });
+        continue;
+      }
+
       const classified = classifyMedia(file);
       if ("kind" in classified) {
         supported.push(classified);
@@ -39,6 +48,15 @@ export function buildMigrationPlan(discovery: DiscoveryResult): MigrationPlan {
 
   const outsideLeafMedia: SupportedMediaFile[] = [];
   for (const file of [...discovery.outsideLeafFiles].sort(compareRelativePath)) {
+    if (hasControlCharacters(file.relativePath)) {
+      skippedFiles.push({
+        ...file,
+        reason: "invalid-path",
+        detail: "File path contains control characters unsupported by manifest upload",
+      });
+      continue;
+    }
+
     const classified = classifyMedia(file);
     if ("kind" in classified) {
       outsideLeafMedia.push(classified);
@@ -128,4 +146,8 @@ function compareRelativePath(
   right: { readonly relativePath: string },
 ): number {
   return left.relativePath.localeCompare(right.relativePath);
+}
+
+function hasControlCharacters(value: string): boolean {
+  return /[\p{C}]/u.test(value);
 }
