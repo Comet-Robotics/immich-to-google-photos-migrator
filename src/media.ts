@@ -13,7 +13,6 @@ const IMAGE_EXTENSIONS = new Set([
   ".dng",
   ".cr2",
   ".cr3",
-  ".xmp",
   ".png",
   ".tif",
   ".tiff",
