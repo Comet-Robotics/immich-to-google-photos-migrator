@@ -3,9 +3,20 @@ import * as Options from "@effect/cli/Options";
 import { BunContext } from "@effect/platform-bun";
 import { inspect } from "node:util";
 import { Console, Effect, pipe } from "effect";
-import { ConfigError } from "./types";
 import { normalizeConfig, parseRuntimeConfig } from "./config";
+import type { GitBuildInfo } from "./git-build-info.macro.ts";
+import { gitBuildInfo } from "./git-build-info.macro.ts" with { type: "macro" };
 import { runMigrationEffect } from "./scheduler";
+import { ConfigError } from "./types";
+
+function cliVersionFromGit(info: GitBuildInfo): string {
+  const firstLine =
+    info.message.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
+  const summary = firstLine.length > 0 ? firstLine : "(no message)";
+  return `${info.hash} ${summary}`;
+}
+
+const CLI_VERSION = cliVersionFromGit(gitBuildInfo());
 
 export async function runCli(argv = process.argv): Promise<number> {
   return Effect.runPromise(runCliEffect(argv).pipe(Effect.provide(BunContext.layer)));
@@ -91,7 +102,7 @@ const cliCommand = Command.make(
 export function runCliEffect(argv = process.argv): Effect.Effect<number, never, never> {
  return Command.run(cliCommand, {
     name: "immich-to-google-photos-migrator",
-    version: "0.1.0",
+    version: CLI_VERSION,
   })(argv).pipe(
     Effect.as(0),
     Effect.catchAll((error) =>
