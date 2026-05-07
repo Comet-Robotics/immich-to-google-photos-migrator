@@ -32,6 +32,15 @@ const VIDEO_EXTENSIONS = new Set([
   ".webm",
 ]);
 
+/**
+ * Google Photos (via rclone) does not accept XMP sidecar uploads. We still classify `.xmp` as
+ * supported media so leaf folders are not treated as empty; use this predicate to omit those
+ * files from rclone upload manifests.
+ */
+export function isGooglePhotosRcloneUpload(file: SupportedMediaFile): boolean {
+  return file.extension !== ".xmp";
+}
+
 export function classifyMedia(file: FileEntry): SupportedMediaFile | SkippedFile {
   const extension = extname(file.relativePath).toLowerCase();
   const kind = mediaKindForExtension(extension);

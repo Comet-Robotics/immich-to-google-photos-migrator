@@ -4,8 +4,7 @@ import { acquireRunLock, initialCheckpoint, loadOrCreateCheckpoint, saveCheckpoi
 import { discoverSourceTreeEffect } from "./discovery";
 import { buildMigrationPlan } from "./plan";
 import { buildReport, renderFinalReport, renderPlanSummary, writeReport } from "./report";
-import { BunProcessRunner } from "./rclone";
-import { RcloneClient } from "./rclone";
+import { BunProcessRunner, type CopyWorkItemOutcome, RcloneClient } from "./rclone";
 import { CheckpointError, RcloneError, type AppError, type CheckpointState, type MigrationPlan, type ProcessRunner, type RuntimeConfig, type WorkItem } from "./types";
 
 export interface RunMigrationOptions {
@@ -252,10 +251,16 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
               continue;
             }
 
+            const copyOutcome: CopyWorkItemOutcome = copyResult.value;
+            const completeMessage =
+              copyOutcome === "rclone-copied"
+                ? "rclone copy completed"
+                : "completed without Google Photos upload (non-uploadable sidecars only, e.g. XMP)";
+
             const saveResult = yield* Effect.exit(
               updateAndSave(item, {
                 status: "complete",
-                message: "rclone copy completed",
+                message: completeMessage,
               }),
             );
 

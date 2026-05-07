@@ -8,7 +8,7 @@ import {
   remotePath,
   validateRemoteName,
 } from "../src/rclone";
-import type { RuntimeConfig, WorkItem } from "../src/types";
+import type { RuntimeConfig, SupportedMediaFile, WorkItem } from "../src/types";
 import { createTempFixture } from "./helpers/temp-fixtures";
 import { FakeProcessRunner } from "./helpers/fake-process-runner";
 
@@ -61,6 +61,59 @@ describe("rclone boundary", () => {
       const manifest = await Bun.file(manifestPath).text();
       expect(manifest).toContain("photo.jpg");
       expect(manifest).not.toContain("metadata.json");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("manifest omits XMP sidecars but copy still runs for other media", async () => {
+    const fixture = await createTempFixture();
+    try {
+      const jpg = await fixture.writeFile("source/photo.jpg");
+      const xmp = await fixture.writeFile("source/photo.xmp");
+      const runner = new FakeProcessRunner([{}]);
+      const client = new RcloneClient({ config: config(fixture.root), runner });
+
+      await Effect.runPromise(
+        client.copyWorkItem(
+          await workItemWithFiles(fixture.root, [
+            { path: jpg, relativePath: "source/photo.jpg", extension: ".jpg" },
+            { path: xmp, relativePath: "source/photo.xmp", extension: ".xmp" },
+          ]),
+          `${fixture.root}/state/manifests`,
+        ),
+      );
+
+      expect(runner.calls.length).toBe(1);
+      const manifestFlagIndex = runner.calls[0]?.command.indexOf("--files-from-raw") ?? -1;
+      const manifestPath = runner.calls[0]?.command[manifestFlagIndex + 1];
+      if (!manifestPath) {
+        throw new Error("manifest path was not captured");
+      }
+      const manifest = await Bun.file(manifestPath).text();
+      expect(manifest).toContain("photo.jpg");
+      expect(manifest).not.toContain("photo.xmp");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("skips rclone copy when work item is only XMP sidecars", async () => {
+    const fixture = await createTempFixture();
+    try {
+      const xmp = await fixture.writeFile("source/photo.xmp");
+      const runner = new FakeProcessRunner([]);
+      const client = new RcloneClient({ config: config(fixture.root), runner });
+
+      const outcome = await Effect.runPromise(
+        client.copyWorkItem(
+          await workItemWithFiles(fixture.root, [{ path: xmp, relativePath: "source/photo.xmp", extension: ".xmp" }]),
+          `${fixture.root}/state/manifests`,
+        ),
+      );
+
+      expect(outcome).toBe("skipped-no-uploadable-files");
+      expect(runner.calls.length).toBe(0);
     } finally {
       await fixture.cleanup();
     }
@@ -174,5 +227,32 @@ async function workItem(root: string, supportedFile: string): Promise<WorkItem> 
         extension: ".jpg",
       },
     ],
+  };
+}
+
+async function workItemWithFiles(
+  root: string,
+  files: readonly { readonly path: string; readonly relativePath: string; readonly extension: string }[],
+): Promise<WorkItem> {
+  const supportedFiles: SupportedMediaFile[] = [];
+  for (const f of files) {
+    const fileStat = await stat(f.path);
+    supportedFiles.push({
+      absolutePath: f.path,
+      relativePath: f.relativePath,
+      size: fileStat.size,
+      mtimeMs: fileStat.mtimeMs,
+      kind: "image",
+      extension: f.extension,
+    });
+  }
+  return {
+    id: "work",
+    albumKey: "Event",
+    albumName: "ImmichBackup: Event",
+    sourceFolder: `${root}/source`,
+    sourceFolderRelativePath: "source",
+    manifestFingerprint: "fingerprint",
+    supportedFiles,
   };
 }

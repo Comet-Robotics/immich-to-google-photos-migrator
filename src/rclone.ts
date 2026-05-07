@@ -2,8 +2,19 @@ import { createHash } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Effect } from "effect";
+import { isGooglePhotosRcloneUpload } from "./media";
 import { writePrivateFileAtomically } from "./private-file";
-import { RcloneError, type AlbumName, type ProcessResult, type ProcessRunOptions, type ProcessRunner, type RcloneAlbumResolution, type RuntimeConfig, type WorkItem } from "./types";
+import {
+  RcloneError,
+  type AlbumName,
+  type ProcessResult,
+  type ProcessRunOptions,
+  type ProcessRunner,
+  type RcloneAlbumResolution,
+  type RuntimeConfig,
+  type SupportedMediaFile,
+  type WorkItem,
+} from "./types";
 
 /** Normalized `type` value for checkpoint fingerprint stability. */
 export const GOOGLE_PHOTOS_REMOTE_TYPE = "google photos";
@@ -15,6 +26,9 @@ export interface RclonePreflight {
   readonly version: ProcessResult;
   readonly remoteFingerprint: string;
 }
+
+/** How {@link RcloneClient.copyWorkItem} satisfied the work item at the Google Photos boundary. */
+export type CopyWorkItemOutcome = "rclone-copied" | "skipped-no-uploadable-files";
 
 export class BunProcessRunner implements ProcessRunner {
   run(command: readonly string[], options: ProcessRunOptions = {}): Effect.Effect<ProcessResult, RcloneError> {
@@ -176,7 +190,7 @@ export class RcloneClient {
     });
   }
 
-  copyWorkItem(workItem: WorkItem, manifestDir: string): Effect.Effect<void, RcloneError> {
+  copyWorkItem(workItem: WorkItem, manifestDir: string): Effect.Effect<CopyWorkItemOutcome, RcloneError> {
     return Effect.gen(this, function* () {
       validateAlbumName(workItem.albumName);
       yield* Effect.tryPromise({
@@ -186,8 +200,16 @@ export class RcloneClient {
             ? error
             : new RcloneError({ message: error instanceof Error ? error.message : String(error) }),
       });
+      const uploadableFiles = workItem.supportedFiles.filter(isGooglePhotosRcloneUpload);
+      if (uploadableFiles.length === 0) {
+        yield* Effect.logInfo(
+          `[rclone] skip copy for ${workItem.sourceFolderRelativePath}: no Google Photos-uploadable files (e.g. XMP sidecars only)`,
+        );
+        return "skipped-no-uploadable-files" as const;
+      }
+
       const manifestPath = yield* Effect.tryPromise({
-        try: () => writeManifest(workItem, manifestDir),
+        try: () => writeManifest(workItem, uploadableFiles, manifestDir),
         catch: (error) =>
           error instanceof RcloneError
             ? error
@@ -213,6 +235,7 @@ export class RcloneClient {
       if (result.exitCode !== 0) {
         return yield* Effect.fail(rcloneFailure(`Unable to upload ${workItem.sourceFolderRelativePath}`, result));
       }
+      return "rclone-copied" as const;
     });
   }
 
@@ -274,10 +297,14 @@ export function minimalRcloneEnv(env: NodeJS.ProcessEnv): Record<string, string>
   return Object.fromEntries(allowed.entries());
 }
 
-async function writeManifest(workItem: WorkItem, manifestDir: string): Promise<string> {
+async function writeManifest(
+  workItem: WorkItem,
+  files: readonly SupportedMediaFile[],
+  manifestDir: string,
+): Promise<string> {
   await mkdir(manifestDir, { recursive: true, mode: 0o700 });
   const manifestPath = join(manifestDir, `${workItem.id}.files-from-raw`);
-  const lines = workItem.supportedFiles.map((file) => {
+  const lines = files.map((file) => {
     validateManifestPath(workItem.sourceFolder, file.absolutePath);
     return relative(workItem.sourceFolder, file.absolutePath);
   });

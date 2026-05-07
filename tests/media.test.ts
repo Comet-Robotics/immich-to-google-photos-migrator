@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { classifyMedia, supportedExtensions } from "../src/media";
-import type { FileEntry } from "../src/types";
+import { classifyMedia, isGooglePhotosRcloneUpload, supportedExtensions } from "../src/media";
+import type { FileEntry, SupportedMediaFile } from "../src/types";
 
 describe("media classification", () => {
   test("classifies common image and video extensions case-insensitively", () => {
@@ -18,6 +18,13 @@ describe("media classification", () => {
   test("exposes a documented allowlist", () => {
     expect(supportedExtensions()).toContain(".jpg");
     expect(supportedExtensions()).toContain(".mp4");
+    expect(supportedExtensions()).toContain(".xmp");
+  });
+
+  test("classifies XMP as supported image but excludes it from Google Photos rclone uploads", () => {
+    const xmp = classifyMedia(file("sidecar.xmp"));
+    expect(xmp).toMatchObject({ kind: "image", extension: ".xmp" });
+    expect(isGooglePhotosRcloneUpload(xmp as SupportedMediaFile)).toBe(false);
   });
 });
 
