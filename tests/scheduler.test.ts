@@ -2,15 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { runMigration } from "../src/scheduler";
 import type { RuntimeConfig } from "../src/types";
+import { fakeRcloneConfigShowGooglePhotos } from "./helpers/fake-rclone-config";
 import { createTempFixture } from "./helpers/temp-fixtures";
 import { FakeProcessRunner } from "./helpers/fake-process-runner";
+
+const CFG = fakeRcloneConfigShowGooglePhotos();
 
 describe("runMigration", () => {
   test("plan-only mode writes a plan without upload calls", async () => {
     const fixture = await createTempFixture();
     try {
       await fixture.writeFile("event/photo.jpg");
-      const runner = new FakeProcessRunner([{}]);
+      const runner = new FakeProcessRunner([{}, { stdout: CFG }]);
 
       const result = await runMigration({
         config: config(fixture.root, { planOnly: true }),
@@ -32,6 +35,7 @@ describe("runMigration", () => {
       await fixture.writeFile("2024/SRP photos all/b.jpg");
       const runner = new FakeProcessRunner([
         {},
+        { stdout: CFG },
         { stdout: "" },
         {},
         {},
@@ -58,7 +62,7 @@ describe("runMigration", () => {
 
       const result = await runMigration({
         config: config(fixture.root, { planOnly: true }),
-        runner: new FakeProcessRunner([{}]),
+        runner: new FakeProcessRunner([{}, { stdout: CFG }]),
       });
 
       expect(result.ok).toBe(true);
@@ -78,7 +82,7 @@ describe("runMigration", () => {
       await expect(
         runMigration({
           config: config(fixture.root),
-          runner: new FakeProcessRunner([{}]),
+          runner: new FakeProcessRunner([{}, { stdout: CFG }]),
         }),
       ).rejects.toThrow("Media files were found outside leaf folders");
     } finally {
@@ -92,7 +96,7 @@ describe("runMigration", () => {
       await fixture.writeFile("event/photo.jpg");
       const runner = new FakeProcessRunner([
         {},
-        {},
+        { stdout: CFG },
         { stdout: "ImmichBackup: event/\nImmichBackup: event/\n" },
       ]);
 
@@ -113,8 +117,8 @@ describe("runMigration", () => {
       await fixture.writeFile("event/photo.jpg");
       const runner = new FakeProcessRunner([
         {},
+        { stdout: CFG },
         { stdout: "" },
-        {},
         {},
         { exitCode: 1, stderr: "network failure" },
       ]);
@@ -141,7 +145,7 @@ describe("runMigration", () => {
             stateDir: join(fixture.root, "state"),
             reportDir: join(fixture.root, "reports"),
           }),
-          runner: new FakeProcessRunner([{}]),
+          runner: new FakeProcessRunner([{}, { stdout: CFG }]),
         }),
       ).rejects.toThrow("Some source paths could not be read");
     } finally {
@@ -164,6 +168,7 @@ function config(root: string, overrides: Partial<RuntimeConfig> = {}): RuntimeCo
     acknowledgeUnknownRemote: false,
     retryUncertain: false,
     rcloneBinary: "rclone",
+    printRemoteFingerprint: false,
     ...overrides,
   };
 }

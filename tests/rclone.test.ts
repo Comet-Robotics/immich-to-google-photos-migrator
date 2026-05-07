@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { stat } from "node:fs/promises";
 import { Effect } from "effect";
-import { RcloneClient, remotePath, validateRemoteName } from "../src/rclone";
+import {
+  GOOGLE_PHOTOS_REMOTE_TYPE,
+  googlePhotosRemoteIdentityFingerprint,
+  RcloneClient,
+  remotePath,
+  validateRemoteName,
+} from "../src/rclone";
 import type { RuntimeConfig, WorkItem } from "../src/types";
 import { createTempFixture } from "./helpers/temp-fixtures";
 import { FakeProcessRunner } from "./helpers/fake-process-runner";
@@ -83,6 +89,52 @@ describe("rclone boundary", () => {
     expect(() => validateRemoteName("bad remote")).toThrow();
     expect(() => remotePath("gphotos", "album/bad\u0000name")).toThrow();
   });
+
+  test("Google Photos fingerprint ignores token and client_secret", () => {
+    const base = `[gphotos]
+type = ${GOOGLE_PHOTOS_REMOTE_TYPE}
+token = {"access_token":"a","refresh_token":"b"}
+client_id = same.apps.googleusercontent.com
+client_secret = secret-one
+`;
+    const rotated = `[gphotos]
+type = ${GOOGLE_PHOTOS_REMOTE_TYPE}
+token = {"access_token":"z","refresh_token":"y","expiry":"2099-01-01"}
+client_id = same.apps.googleusercontent.com
+client_secret = secret-two
+`;
+    expect(googlePhotosRemoteIdentityFingerprint(base)).toBe(googlePhotosRemoteIdentityFingerprint(rotated));
+  });
+
+  test("Google Photos fingerprint changes when client_id changes", () => {
+    const a = `[gphotos]
+type = google photos
+client_id = a.apps.googleusercontent.com
+`;
+    const b = `[gphotos]
+type = google photos
+client_id = b.apps.googleusercontent.com
+`;
+    expect(googlePhotosRemoteIdentityFingerprint(a)).not.toBe(googlePhotosRemoteIdentityFingerprint(b));
+  });
+
+  test("rejects non-Google Photos remote type", () => {
+    const drive = `[x]
+type = drive
+client_id = x
+`;
+    expect(() => googlePhotosRemoteIdentityFingerprint(drive)).toThrow(
+      /only supports Google Photos remotes/,
+    );
+  });
+
+  test("rejects Google Photos remote missing client_id", () => {
+    expect(() =>
+      googlePhotosRemoteIdentityFingerprint(`[gphotos]
+type = google photos
+`),
+    ).toThrow(/missing client_id/);
+  });
 });
 
 function config(root: string): RuntimeConfig {
@@ -99,6 +151,7 @@ function config(root: string): RuntimeConfig {
     acknowledgeUnknownRemote: false,
     retryUncertain: false,
     rcloneBinary: "rclone",
+    printRemoteFingerprint: false,
   };
 }
 

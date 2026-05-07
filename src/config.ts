@@ -15,6 +15,7 @@ const RuntimeConfigSchema = Schema.Struct({
   acknowledgeUnknownRemote: Schema.Boolean,
   retryUncertain: Schema.Boolean,
   rcloneBinary: Schema.String,
+  printRemoteFingerprint: Schema.Boolean,
 });
 
 
@@ -31,6 +32,7 @@ export interface RawRuntimeConfig {
   readonly acknowledgeUnknownRemote: boolean;
   readonly retryUncertain: boolean;
   readonly rcloneBinary: string;
+  readonly printRemoteFingerprint: boolean;
 }
 
 export function normalizeConfig(raw: RawRuntimeConfig, cwd = process.cwd()): RawRuntimeConfig {

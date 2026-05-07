@@ -5,6 +5,12 @@ import { Effect } from "effect";
 import { writePrivateFileAtomically } from "./private-file";
 import { RcloneError, type AlbumName, type ProcessResult, type ProcessRunOptions, type ProcessRunner, type RcloneAlbumResolution, type RuntimeConfig, type WorkItem } from "./types";
 
+/** Normalized `type` value for checkpoint fingerprint stability. */
+export const GOOGLE_PHOTOS_REMOTE_TYPE = "google photos";
+
+/** Prefix for OAuth-stable remote fingerprints (Google Photos `client_id` only). */
+export const REMOTE_FINGERPRINT_PREFIX = "v2:";
+
 export interface RclonePreflight {
   readonly version: ProcessResult;
   readonly remoteFingerprint: string;
@@ -93,9 +99,22 @@ export class RcloneClient {
         return { version, remoteFingerprint: "unverified" };
       }
 
+      let remoteFingerprint: string;
+      try {
+        remoteFingerprint = googlePhotosRemoteIdentityFingerprint(remoteConfig.stdout);
+      } catch (error) {
+        return yield* Effect.fail(
+          error instanceof RcloneError
+            ? error
+            : new RcloneError({
+                message: error instanceof Error ? error.message : String(error),
+              }),
+        );
+      }
+
       return {
         version,
-        remoteFingerprint: fingerprint(remoteConfig.stdout),
+        remoteFingerprint,
       };
     });
   }
@@ -310,8 +329,58 @@ function renderCommand(command: readonly string[]): string {
   return command.map((part) => JSON.stringify(part)).join(" ");
 }
 
-function fingerprint(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+function sha256HexUtf8(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/**
+ * Parses `rclone config show` stdout into lowercase keys (first `=` separates key from value).
+ */
+export function parseRcloneConfigShow(stdout: string): Map<string, string> {
+  const entries = new Map<string, string>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith(";")) {
+      continue;
+    }
+    if (/^\[[^\]]+\]$/.test(trimmed)) {
+      continue;
+    }
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) {
+      continue;
+    }
+    const key = trimmed.slice(0, eq).trim().toLowerCase();
+    const value = trimmed.slice(eq + 1).trim();
+    entries.set(key, value);
+  }
+  return entries;
+}
+
+/**
+ * Stable fingerprint for Google Photos: hashes `type` + `client_id` only (no token or secret).
+ * OAuth refresh tokens do not affect this value.
+ */
+export function googlePhotosRemoteIdentityFingerprint(configShowStdout: string): string {
+  const parsed = parseRcloneConfigShow(configShowStdout);
+  const rawType = parsed.get("type");
+  const normalizedType = rawType?.trim().toLowerCase() ?? "";
+  if (normalizedType !== GOOGLE_PHOTOS_REMOTE_TYPE) {
+    throw new RcloneError({
+      message: `This migrator only supports Google Photos remotes (type = google photos); remote has type ${rawType !== undefined && rawType !== "" ? JSON.stringify(rawType) : "(missing)"}`,
+    });
+  }
+  const clientId = parsed.get("client_id")?.trim();
+  if (!clientId) {
+    throw new RcloneError({
+      message: "Google Photos remote is missing client_id in `rclone config show` output.",
+    });
+  }
+  const canonical = JSON.stringify({
+    client_id: clientId,
+    type: GOOGLE_PHOTOS_REMOTE_TYPE,
+  });
+  return `${REMOTE_FINGERPRINT_PREFIX}${sha256HexUtf8(canonical)}`;
 }
 
 interface ReadStreamOptions {

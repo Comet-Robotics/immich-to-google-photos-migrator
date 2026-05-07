@@ -60,6 +60,7 @@ Useful options:
 - `--acknowledge-unreadable-paths`: continue when some source paths could not be read
 - `--acknowledge-unknown-remote`: continue when rclone cannot prove album listing or account identity
 - `--retry-uncertain`: retry work that may have partially uploaded in a previous run
+- `--print-remote-fingerprint`: run rclone preflight only, print the stable `v2:` remote fingerprint (for `checkpoint.json`), then exit
 - `--yes`: apply all explicit acknowledgements
 
 Uploads are additive. The tool uses rclone copy-style behavior and does not delete Google Photos media or albums.
@@ -68,7 +69,7 @@ Uploads are additive. The tool uses rclone copy-style behavior and does not dele
 
 The migrator writes checkpoint state after each successful upload work item. Re-run the same command with the same state directory to continue after an interruption.
 
-Completed work is skipped only when the checkpoint identity still matches the current source root, remote name, rclone remote config fingerprint, album policy, media allowlist, and planned file manifests. Work left `running` by an interrupted process is normalized to `uncertain` on resume and is not retried unless you pass `--retry-uncertain`.
+Completed work is skipped only when the checkpoint identity still matches the current source root, remote name, stable Google Photos remote fingerprint (`v2:` prefix), album policy, media allowlist, and planned file manifests. The fingerprint is derived from the remote `type` and OAuth `client_id` only (tokens and `client_secret` are ignored), so OAuth refresh does not invalidate resume. If you upgrade from an older tool version that stored a legacy full-config hash, update `identity.remoteFingerprint` in `checkpoint.json` once—use `--print-remote-fingerprint` to print the current value. Work left `running` by an interrupted process is normalized to `uncertain` on resume and is not retried unless you pass `--retry-uncertain`.
 
 Only one run may use a state directory at a time. If a previous process was interrupted, inspect the lock file and active processes before removing the lock manually.
 

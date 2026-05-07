@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { runMigration } from "../src/scheduler";
 import type { RuntimeConfig } from "../src/types";
+import { fakeRcloneConfigShowGooglePhotos } from "./helpers/fake-rclone-config";
 import { createTempFixture } from "./helpers/temp-fixtures";
 import { FakeProcessRunner } from "./helpers/fake-process-runner";
+
+const CFG = fakeRcloneConfigShowGooglePhotos();
 
 describe("fake rclone integration", () => {
   test("runs a repeated-basename migration and resumes from checkpoint", async () => {
@@ -12,12 +15,12 @@ describe("fake rclone integration", () => {
       await fixture.writeFile("2023/SRP photos all/a.jpg");
       await fixture.writeFile("2024/SRP photos all/b.jpg");
       await fixture.writeFile("2024/SRP photos all/sidecar.json");
-      const firstRunner = new FakeProcessRunner([{}, { stdout: "" }, {}, {}, {}]);
+      const firstRunner = new FakeProcessRunner([{}, { stdout: CFG }, {}, {}, {}]);
 
       const first = await runMigration({ config: config(fixture.root), runner: firstRunner });
       const secondRunner = new FakeProcessRunner([
         {},
-        { stdout: "" },
+        { stdout: CFG },
         { stdout: "ImmichBackup: SRP photos all/\n" },
       ]);
       const second = await runMigration({ config: config(fixture.root), runner: secondRunner });
@@ -37,13 +40,13 @@ describe("fake rclone integration", () => {
     const fixture = await createTempFixture();
     try {
       await fixture.writeFile("event/photo.jpg");
-      const firstRunner = new FakeProcessRunner([{}, { stdout: "" }, {}, { delayMs: 100 }]);
+      const firstRunner = new FakeProcessRunner([{}, { stdout: CFG }, {}, { delayMs: 100 }]);
       const firstRun = runMigration({ config: config(fixture.root), runner: firstRunner });
 
       await Bun.sleep(20);
 
       await expect(
-        runMigration({ config: config(fixture.root), runner: new FakeProcessRunner([{}]) }),
+        runMigration({ config: config(fixture.root), runner: new FakeProcessRunner([{}, { stdout: CFG }]) }),
       ).rejects.toThrow("Migration lock already exists");
 
       await firstRun;
@@ -67,6 +70,7 @@ function config(root: string): RuntimeConfig {
     acknowledgeUnknownRemote: false,
     retryUncertain: false,
     rcloneBinary: "rclone",
+    printRemoteFingerprint: false,
   };
 }
 

@@ -47,6 +47,7 @@ export interface RuntimeConfig {
   readonly acknowledgeUnknownRemote: boolean;
   readonly retryUncertain: boolean;
   readonly rcloneBinary: string;
+  readonly printRemoteFingerprint: boolean;
 }
 
 export interface FileEntry {

@@ -6,6 +6,7 @@ import { Console, Effect, pipe } from "effect";
 import { normalizeConfig, parseRuntimeConfig } from "./config";
 import type { GitBuildInfo } from "./git-build-info.macro.ts";
 import { gitBuildInfo } from "./git-build-info.macro.ts" with { type: "macro" };
+import { BunProcessRunner, RcloneClient } from "./rclone";
 import { runMigrationEffect } from "./scheduler";
 import { ConfigError } from "./types";
 
@@ -67,6 +68,13 @@ const cliCommand = Command.make(
     retryUncertain: Options.boolean("retry-uncertain")
       .pipe(Options.withDescription("Retry uncertain uploads"))
       .pipe(Options.withDefault(false)),
+    printRemoteFingerprint: Options.boolean("print-remote-fingerprint")
+      .pipe(
+        Options.withDescription(
+          "Run rclone preflight only, print the stable remote fingerprint for checkpoint.json, then exit",
+        ),
+      )
+      .pipe(Options.withDefault(false)),
   },
   (args) =>
     Effect.gen(function* () {
@@ -84,8 +92,16 @@ const cliCommand = Command.make(
           acknowledgeUnknownRemote: args.acknowledgeUnknownRemote || args.yes,
           retryUncertain: args.retryUncertain,
           rcloneBinary: args.rcloneBinary,
+          printRemoteFingerprint: args.printRemoteFingerprint,
         }),
       );
+      if (config.printRemoteFingerprint) {
+        const runner = new BunProcessRunner();
+        const rclone = new RcloneClient({ config, runner });
+        const preflight = yield* rclone.preflight();
+        yield* Console.log(preflight.remoteFingerprint);
+        return;
+      }
       const result = yield* runMigrationEffect({ config });
       yield* Console.log(`Plan report: ${result.planReportPath}`);
       if (result.finalReportPath) {
