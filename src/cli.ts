@@ -4,7 +4,7 @@ import { BunContext } from "@effect/platform-bun";
 import { inspect } from "node:util";
 import { Console, Effect, pipe } from "effect";
 import { ConfigError } from "./types";
-import { normalizeConfig, parseRuntimeConfig, usage } from "./config";
+import { normalizeConfig, parseRuntimeConfig } from "./config";
 import { runMigrationEffect } from "./scheduler";
 
 export async function runCli(argv = process.argv): Promise<number> {
@@ -20,27 +20,42 @@ const migrationFailedSentinel: MigrationFailedSentinel = { _tag: "MigrationFaile
 const cliCommand = Command.make(
   "immich-to-google-photos-migrator",
   {
-    sourceRoot: Options.text("source"),
-    remote: Options.text("remote"),
-    stateDir: pipe(Options.text("state-dir"), Options.withDefault(".immich-google-photos-migrator/state")),
-    reportDir: pipe(Options.text("report-dir"), Options.withDefault(".immich-google-photos-migrator/reports")),
-    concurrency: pipe(Options.integer("concurrency"), Options.withDefault(2)),
-    rcloneBinary: pipe(Options.text("rclone-binary"), Options.withDefault("rclone")),
-    planOnly: pipe(Options.boolean("plan-only"), Options.withDefault(false)),
-    yes: pipe(Options.boolean("yes"), Options.withDefault(false)),
-    acknowledgeNonLeafMedia: pipe(
-      Options.boolean("acknowledge-non-leaf-media"),
-      Options.withDefault(false),
-    ),
-    acknowledgeUnreadablePaths: pipe(
-      Options.boolean("acknowledge-unreadable-paths"),
-      Options.withDefault(false),
-    ),
-    acknowledgeUnknownRemote: pipe(
-      Options.boolean("acknowledge-unknown-remote"),
-      Options.withDefault(false),
-    ),
-    retryUncertain: pipe(Options.boolean("retry-uncertain"), Options.withDefault(false)),
+    sourceRoot: Options.text("source")
+      .pipe(Options.withDescription("Root directory of the Immich library"))
+      .pipe(Options.withDefault(process.cwd())),
+    remote: Options.text("remote")
+      .pipe(Options.withDescription("The name of the rclone remote to use for Google Photos - find using `rclone listremotes`"))
+      .pipe(Options.withDefault("gphotos")),
+    stateDir: Options.text("state-dir")
+      .pipe(Options.withDefault(".immich-google-photos-migrator/state"))
+      .pipe(Options.withDescription("Directory to write private checkpoint state to")),
+    reportDir: Options.text("report-dir")
+      .pipe(Options.withDefault(".immich-google-photos-migrator/reports"))
+      .pipe(Options.withDescription("Directory to write migration report to")),
+    concurrency: Options.integer("concurrency")
+      .pipe(Options.withDescription("Number of concurrent uploads to perform"))
+      .pipe(Options.withDefault(2)),
+    rcloneBinary: Options.text("rclone-binary")
+      .pipe(Options.withDescription("Path to the rclone binary to use"))
+      .pipe(Options.withDefault("rclone")),
+    planOnly: Options.boolean("plan-only")
+      .pipe(Options.withDescription("Only build the plan and not perform any uploads"))
+      .pipe(Options.withDefault(true)),
+    yes: Options.boolean("yes")
+      .pipe(Options.withDescription("Automatically acknowledge all prompts"))
+      .pipe(Options.withDefault(false)),
+    acknowledgeNonLeafMedia: Options.boolean("acknowledge-non-leaf-media")
+      .pipe(Options.withDescription("Continue when media exists outside leaf folders"))
+      .pipe(Options.withDefault(false)),
+    acknowledgeUnreadablePaths: Options.boolean("acknowledge-unreadable-paths")
+      .pipe(Options.withDescription("Continuine paths could not be read"))
+      .pipe(Options.withDefault(false)),
+    acknowledgeUnknownRemote: Options.boolean("acknowledge-unknown-remote")
+      .pipe(Options.withDescription("Continue when remote identity/listing is limited"))
+      .pipe(Options.withDefault(false)),
+    retryUncertain: Options.boolean("retry-uncertain")
+      .pipe(Options.withDescription("Retry uncertain uploads"))
+      .pipe(Options.withDefault(false)),
   },
   (args) =>
     Effect.gen(function* () {
@@ -74,11 +89,7 @@ const cliCommand = Command.make(
 );
 
 export function runCliEffect(argv = process.argv): Effect.Effect<number, never, never> {
-  if (argv.length <= 2 || argv.includes("--help") || argv.includes("-h")) {
-    return Console.log(usage()).pipe(Effect.as(0), Effect.orDie);
-  }
-
-  return Command.run(cliCommand, {
+ return Command.run(cliCommand, {
     name: "immich-to-google-photos-migrator",
     version: "0.1.0",
   })(argv).pipe(
@@ -96,7 +107,7 @@ export function runCliEffect(argv = process.argv): Effect.Effect<number, never, 
 
 function renderError(error: unknown): string {
   if (error instanceof ConfigError) {
-    return `Configuration error: ${error.message}\n\n${usage()}`;
+    return `Configuration error: ${error.message}`;
   }
   if (error instanceof Error) {
     return `${error.name}: ${error.message}`;
