@@ -184,9 +184,13 @@ export class RcloneClient {
         "--gphotos-batch-mode",
         "sync",
         "--transfers",
-        "1",
+        "32",
         "--checkers",
-        "1",
+        "16",
+        "--buffer-size",
+        "256M",
+        "--gphotos-batch-size",
+        "48"
       ]);
 
       if (result.exitCode !== 0) {
