@@ -76,31 +76,4 @@ describe("parseConfig", () => {
   });
 });
 
-describe("usage", () => {
-  test("uses executable and script when run via runtime", () => {
-    const command = inferCommandFromProcessArgv([
-      "/opt/homebrew/bin/bun",
-      "/repo/index.ts",
-      "--source",
-      "library",
-    ]);
 
-    expect(command).toBe("bun index.ts");
-    expect(usage(command)).toContain(
-      "Usage: bun index.ts --source <immich-library-root> --remote <rclone-remote> [options]",
-    );
-  });
-
-  test("uses binary name when run as compiled executable", () => {
-    const command = inferCommandFromProcessArgv([
-      "/repo/out/immich-to-google-photos-migrator",
-      "--source",
-      "library",
-    ]);
-
-    expect(command).toBe("immich-to-google-photos-migrator");
-    expect(usage(command)).toContain(
-      "Usage: immich-to-google-photos-migrator --source <immich-library-root> --remote <rclone-remote> [options]",
-    );
-  });
-});

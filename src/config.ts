@@ -138,9 +138,9 @@ export function parseRuntimeConfig(raw: RawRuntimeConfig): RuntimeConfig {
   }
 }
 
-export function usage(command = inferCommandFromProcessArgv()): string {
+export function usage(): string {
   return [
-    `Usage: ${command} --source <immich-library-root> --remote <rclone-remote> [options]`,
+    `Usage: immich-to-google-photos-migrator --source <immich-library-root> --remote <rclone-remote> [options]`,
     "",
     "Options:",
     "  --state-dir <path>                 Directory for private checkpoint state",
@@ -154,15 +154,6 @@ export function usage(command = inferCommandFromProcessArgv()): string {
     "  --retry-uncertain                  Retry work that may have partially uploaded previously",
     "  --yes                              Apply all explicit acknowledgements",
   ].join("\n");
-}
-
-export function inferCommandFromProcessArgv(argv: readonly string[] = process.argv): string {
-  const executableName = basename(argv[0] ?? "immich-to-google-photos-migrator");
-  const scriptPath = argv[1];
-  if (scriptPath && looksLikeScriptPath(scriptPath)) {
-    return `${executableName} ${basename(scriptPath)}`;
-  }
-  return executableName;
 }
 
 function isBooleanFlag(name: string): boolean {

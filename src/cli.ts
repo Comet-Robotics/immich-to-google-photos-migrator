@@ -1,12 +1,13 @@
 import * as Command from "@effect/cli/Command";
 import * as Options from "@effect/cli/Options";
 import { BunContext } from "@effect/platform-bun";
+import { inspect } from "node:util";
 import { Console, Effect, pipe } from "effect";
 import { ConfigError } from "./types";
 import { normalizeConfig, parseRuntimeConfig, usage } from "./config";
 import { runMigrationEffect } from "./scheduler";
 
-export async function runCli(argv = process.argv.slice(2)): Promise<number> {
+export async function runCli(argv = process.argv): Promise<number> {
   return Effect.runPromise(runCliEffect(argv).pipe(Effect.provide(BunContext.layer)));
 }
 
@@ -72,8 +73,8 @@ const cliCommand = Command.make(
     }),
 );
 
-export function runCliEffect(argv = process.argv.slice(2)): Effect.Effect<number, never, never> {
-  if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
+export function runCliEffect(argv = process.argv): Effect.Effect<number, never, never> {
+  if (argv.length <= 2 || argv.includes("--help") || argv.includes("-h")) {
     return Console.log(usage()).pipe(Effect.as(0), Effect.orDie);
   }
 
@@ -85,6 +86,8 @@ export function runCliEffect(argv = process.argv.slice(2)): Effect.Effect<number
     Effect.catchAll((error) =>
       error === migrationFailedSentinel
         ? Effect.succeed(1)
+        : isCliValidationError(error)
+          ? Effect.succeed(1)
         : Console.error(renderError(error)).pipe(Effect.as(1))),
     Effect.orDie,
     Effect.provide(BunContext.layer),
@@ -98,5 +101,49 @@ function renderError(error: unknown): string {
   if (error instanceof Error) {
     return `${error.name}: ${error.message}`;
   }
-  return String(error);
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "error" in error &&
+    typeof (error as { error?: unknown }).error === "object"
+  ) {
+    const rendered = renderCliDoc((error as { error: unknown }).error);
+    if (rendered) {
+      return rendered;
+    }
+  }
+  try {
+    return JSON.stringify(error, null, 2);
+  } catch {
+    return inspect(error);
+  }
+}
+
+function renderCliDoc(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || !("_tag" in value)) {
+    return undefined;
+  }
+  const tagged = value as { _tag: string; value?: unknown; left?: unknown; right?: unknown };
+  switch (tagged._tag) {
+    case "Text":
+      return typeof tagged.value === "string" ? tagged.value : undefined;
+    case "Paragraph":
+      return renderCliDoc(tagged.value);
+    case "Sequence": {
+      const left = renderCliDoc(tagged.left);
+      const right = renderCliDoc(tagged.right);
+      return [left, right].filter(Boolean).join(" ").trim() || undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function isCliValidationError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("_tag" in error)) {
+    return false;
+  }
+  return ["MissingValue", "InvalidArgument", "CommandMismatch", "ValidationError"].includes(
+    String((error as { _tag: unknown })._tag),
+  );
 }
