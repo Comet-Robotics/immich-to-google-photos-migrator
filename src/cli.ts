@@ -1,27 +1,34 @@
+import { Console, Effect } from "effect";
 import { ConfigError } from "./types";
 import { parseConfig, usage } from "./config";
-import { runMigration } from "./scheduler";
+import { runMigrationEffect } from "./scheduler";
 
 export async function runCli(argv = process.argv.slice(2)): Promise<number> {
+  return Effect.runPromise(runCliEffect(argv));
+}
+
+export function runCliEffect(argv = process.argv.slice(2)): Effect.Effect<number, never> {
   if (argv.includes("--help") || argv.includes("-h")) {
-    console.log(usage());
-    return 0;
+    return Console.log(usage()).pipe(Effect.as(0), Effect.orDie);
   }
 
-  try {
+  return Effect.gen(function* () {
     const config = parseConfig(argv);
-    const result = await runMigration({ config });
-    console.log(`Plan report: ${result.planReportPath}`);
+    const result = yield* runMigrationEffect({ config });
+    yield* Console.log(`Plan report: ${result.planReportPath}`);
     if (result.finalReportPath) {
-      console.log(`Final report: ${result.finalReportPath}`);
+      yield* Console.log(`Final report: ${result.finalReportPath}`);
     } else {
-      console.log("Plan-only run complete; no uploads performed.");
+      yield* Console.log("Plan-only run complete; no uploads performed.");
     }
     return result.ok ? 0 : 1;
-  } catch (error) {
-    console.error(renderError(error));
-    return 1;
-  }
+  }).pipe(
+    Effect.catchAll((error) =>
+      Console.error(renderError(error)).pipe(
+        Effect.as(1),
+      )),
+    Effect.orDie,
+  );
 }
 
 function renderError(error: unknown): string {

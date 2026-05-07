@@ -1,4 +1,5 @@
-import type { ProcessResult, ProcessRunOptions, ProcessRunner } from "../../src/types";
+import { Effect } from "effect";
+import type { ProcessResult, ProcessRunOptions, ProcessRunner, RcloneError } from "../../src/types";
 
 export interface FakeProcessCall {
   readonly command: readonly string[];
@@ -37,30 +38,36 @@ export class FakeProcessRunner implements ProcessRunner {
     });
   }
 
-  async run(command: readonly string[], options?: ProcessRunOptions): Promise<ProcessResult> {
-    this.calls.push({ command, options });
-    const result = this.results.shift();
+  run(
+    command: readonly string[],
+    options?: ProcessRunOptions,
+  ): Effect.Effect<ProcessResult, RcloneError> {
+    return Effect.gen(this, function* () {
+      this.calls.push({ command, options });
+      const result = this.results.shift();
 
-    if (!result) {
+      if (!result) {
+        return {
+          command,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+        };
+      }
+
+      const delayMs = result.delayMs ?? 0;
+      if (delayMs > 0) {
+        yield* Effect.promise(() => Bun.sleep(delayMs));
+      }
+
       return {
+        exitCode: result.exitCode ?? 0,
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+        timedOut: result.timedOut,
+        signalCode: result.signalCode,
         command,
-        exitCode: 0,
-        stdout: "",
-        stderr: "",
       };
-    }
-
-    if (result.delayMs) {
-      await Bun.sleep(result.delayMs);
-    }
-
-    return {
-      exitCode: result.exitCode ?? 0,
-      stdout: result.stdout ?? "",
-      stderr: result.stderr ?? "",
-      timedOut: result.timedOut,
-      signalCode: result.signalCode,
-      command,
-    };
+    });
   }
 }

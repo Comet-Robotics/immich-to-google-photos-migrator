@@ -1,8 +1,23 @@
 import { resolve } from "node:path";
+import { Schema } from "effect";
 import { ConfigError, type RuntimeConfig } from "./types";
 
 const DEFAULT_CONCURRENCY = 2;
 const DEFAULT_RCLONE_BINARY = "rclone";
+const RuntimeConfigSchema = Schema.Struct({
+  sourceRoot: Schema.String,
+  remote: Schema.String,
+  stateDir: Schema.String,
+  reportDir: Schema.String,
+  concurrency: Schema.Int.pipe(Schema.between(1, 16)),
+  planOnly: Schema.Boolean,
+  yes: Schema.Boolean,
+  acknowledgeNonLeafMedia: Schema.Boolean,
+  acknowledgeUnreadablePaths: Schema.Boolean,
+  acknowledgeUnknownRemote: Schema.Boolean,
+  retryUncertain: Schema.Boolean,
+  rcloneBinary: Schema.String,
+});
 const VALUE_OPTIONS = new Set([
   "source",
   "remote",
@@ -71,7 +86,7 @@ export function parseConfig(argv: readonly string[], cwd = process.cwd()): Runti
   const stateDir = values.get("state-dir") ?? ".immich-google-photos-migrator/state";
   const reportDir = values.get("report-dir") ?? ".immich-google-photos-migrator/reports";
 
-  return {
+  const resolved = {
     sourceRoot: resolve(cwd, sourceRoot),
     remote,
     stateDir: resolve(cwd, stateDir),
@@ -85,6 +100,11 @@ export function parseConfig(argv: readonly string[], cwd = process.cwd()): Runti
     retryUncertain: flags.has("retry-uncertain"),
     rcloneBinary: values.get("rclone-binary") ?? DEFAULT_RCLONE_BINARY,
   };
+  try {
+    return Schema.decodeUnknownSync(RuntimeConfigSchema)(resolved) as RuntimeConfig;
+  } catch {
+    throw new ConfigError({ message: "Invalid runtime configuration values" });
+  }
 }
 
 export function usage(): string {

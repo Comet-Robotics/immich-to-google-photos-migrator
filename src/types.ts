@@ -158,7 +158,10 @@ export interface ProcessResult {
 }
 
 export interface ProcessRunner {
-  run(command: readonly string[], options?: ProcessRunOptions): Promise<ProcessResult>;
+  run(command: readonly string[], options?: ProcessRunOptions): import("effect").Effect.Effect<
+    ProcessResult,
+    RcloneError
+  >;
 }
 
 export interface ProcessRunOptions {

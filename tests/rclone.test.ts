@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { stat } from "node:fs/promises";
+import { Effect } from "effect";
 import { RcloneClient, remotePath, validateRemoteName } from "../src/rclone";
 import type { RuntimeConfig, WorkItem } from "../src/types";
 import { createTempFixture } from "./helpers/temp-fixtures";
@@ -13,9 +14,11 @@ describe("rclone boundary", () => {
       const runner = new FakeProcessRunner([{ stdout: "ImmichBackup: Event/\n" }, {}, {}]);
       const client = new RcloneClient({ config: config(fixture.root), runner });
 
-      await client.listAlbums();
-      await client.createAlbum("ImmichBackup: Event");
-      await client.copyWorkItem(await workItem(fixture.root, sourceFile), `${fixture.root}/state/manifests`);
+      await Effect.runPromise(client.listAlbums());
+      await Effect.runPromise(client.createAlbum("ImmichBackup: Event"));
+      await Effect.runPromise(
+        client.copyWorkItem(await workItem(fixture.root, sourceFile), `${fixture.root}/state/manifests`),
+      );
 
       expect(runner.calls[0]?.command).toEqual(["rclone", "lsf", "gphotos:album", "--dirs-only"]);
       expect(runner.calls[1]?.command).toEqual(["rclone", "mkdir", "gphotos:album/ImmichBackup: Event"]);
@@ -39,7 +42,9 @@ describe("rclone boundary", () => {
       const runner = new FakeProcessRunner([{}]);
       const client = new RcloneClient({ config: config(fixture.root), runner });
 
-      await client.copyWorkItem(await workItem(fixture.root, supported), `${fixture.root}/state/manifests`);
+      await Effect.runPromise(
+        client.copyWorkItem(await workItem(fixture.root, supported), `${fixture.root}/state/manifests`),
+      );
 
       const manifestFlagIndex = runner.calls[0]?.command.indexOf("--files-from-raw") ?? -1;
       const manifestPath = runner.calls[0]?.command[manifestFlagIndex + 1];

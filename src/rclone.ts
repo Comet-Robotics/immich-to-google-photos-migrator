@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { Effect } from "effect";
 import { RcloneError, type AlbumName, type ProcessResult, type ProcessRunOptions, type ProcessRunner, type RcloneAlbumResolution, type RuntimeConfig, type WorkItem } from "./types";
 
 export interface RclonePreflight {
@@ -9,49 +10,43 @@ export interface RclonePreflight {
 }
 
 export class BunProcessRunner implements ProcessRunner {
-  async run(command: readonly string[], options: ProcessRunOptions = {}): Promise<ProcessResult> {
-    let timedOut = false;
-    let signalCode: string | undefined;
-    const proc = Bun.spawn([...command], {
-      cwd: options.cwd,
-      env: options.env,
-      stdout: "pipe",
-      stderr: "pipe",
-      signal: options.signal,
+  run(command: readonly string[], options: ProcessRunOptions = {}): Effect.Effect<ProcessResult, RcloneError> {
+    return Effect.tryPromise({
+      try: async () => {
+        const timeoutSignal = options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined;
+        const signal = options.signal && timeoutSignal
+          ? AbortSignal.any([options.signal, timeoutSignal])
+          : options.signal ?? timeoutSignal;
+        const proc = Bun.spawn([...command], {
+          cwd: options.cwd,
+          env: options.env,
+          stdout: "pipe",
+          stderr: "pipe",
+          signal,
+        });
+
+        const [stdout, stderr, exitCode] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+          proc.exited,
+        ]);
+
+        const timedOut = Boolean(timeoutSignal?.aborted);
+        return {
+          command,
+          exitCode,
+          stdout,
+          stderr,
+          timedOut,
+          signalCode: timedOut ? "SIGTERM" : undefined,
+        };
+      },
+      catch: (error) =>
+        new RcloneError({
+          message: `Unable to run process: ${error instanceof Error ? error.message : String(error)}`,
+          command,
+        }),
     });
-
-    const timeout = options.timeoutMs
-      ? setTimeout(() => {
-          timedOut = true;
-          signalCode = "SIGTERM";
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            signalCode = "SIGKILL";
-            proc.kill("SIGKILL");
-          }, 5_000);
-        }, options.timeoutMs)
-      : undefined;
-
-    try {
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-
-      return {
-        command,
-        exitCode,
-        stdout,
-        stderr,
-        timedOut,
-        signalCode,
-      };
-    } finally {
-      if (timeout) {
-        clearTimeout(timeout);
-      }
-    }
   }
 }
 
@@ -69,49 +64,53 @@ export class RcloneClient {
     this.runner = options.runner;
   }
 
-  async preflight(): Promise<RclonePreflight> {
-    validateRemoteName(this.config.remote);
-    validateBinary(this.config.rcloneBinary);
-    const version = await this.run([this.config.rcloneBinary, "version"]);
-    if (version.exitCode !== 0) {
-      throw rcloneFailure("Unable to run rclone", version);
-    }
-
-    const remoteConfig = await this.run([
-      this.config.rcloneBinary,
-      "config",
-      "show",
-      this.config.remote,
-    ]);
-    if (remoteConfig.exitCode !== 0) {
-      if (!this.config.acknowledgeUnknownRemote) {
-        throw rcloneFailure("Unable to fingerprint rclone remote", remoteConfig);
+  preflight(): Effect.Effect<RclonePreflight, RcloneError> {
+    return Effect.gen(this, function* () {
+      validateRemoteName(this.config.remote);
+      validateBinary(this.config.rcloneBinary);
+      const version = yield* this.run([this.config.rcloneBinary, "version"]);
+      if (version.exitCode !== 0) {
+        return yield* Effect.fail(rcloneFailure("Unable to run rclone", version));
       }
-      return { version, remoteFingerprint: "unverified" };
-    }
 
-    return {
-      version,
-      remoteFingerprint: fingerprint(remoteConfig.stdout),
-    };
+      const remoteConfig = yield* this.run([
+        this.config.rcloneBinary,
+        "config",
+        "show",
+        this.config.remote,
+      ]);
+      if (remoteConfig.exitCode !== 0) {
+        if (!this.config.acknowledgeUnknownRemote) {
+          return yield* Effect.fail(rcloneFailure("Unable to fingerprint rclone remote", remoteConfig));
+        }
+        return { version, remoteFingerprint: "unverified" };
+      }
+
+      return {
+        version,
+        remoteFingerprint: fingerprint(remoteConfig.stdout),
+      };
+    });
   }
 
-  async listAlbums(): Promise<readonly string[] | "listing-unavailable"> {
-    const result = await this.run([
-      this.config.rcloneBinary,
-      "lsf",
-      remotePath(this.config.remote, "album"),
-      "--dirs-only",
-    ]);
+  listAlbums(): Effect.Effect<readonly string[] | "listing-unavailable", RcloneError> {
+    return Effect.gen(this, function* () {
+      const result = yield* this.run([
+        this.config.rcloneBinary,
+        "lsf",
+        remotePath(this.config.remote, "album"),
+        "--dirs-only",
+      ]);
 
-    if (result.exitCode !== 0) {
-      return "listing-unavailable";
-    }
+      if (result.exitCode !== 0) {
+        return "listing-unavailable";
+      }
 
-    return result.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim().replace(/\/$/, ""))
-      .filter((line) => line.length > 0);
+      return result.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim().replace(/\/$/, ""))
+        .filter((line) => line.length > 0);
+    });
   }
 
   resolveAlbums(albumNames: readonly AlbumName[], visibleAlbums: readonly string[] | "listing-unavailable"): readonly RcloneAlbumResolution[] {
@@ -137,43 +136,59 @@ export class RcloneClient {
     });
   }
 
-  async createAlbum(albumName: AlbumName): Promise<void> {
-    validateAlbumName(albumName);
-    const result = await this.run([
-      this.config.rcloneBinary,
-      "mkdir",
-      remotePath(this.config.remote, `album/${albumName}`),
-    ]);
-    if (result.exitCode !== 0) {
-      throw rcloneFailure(`Unable to create album ${albumName}`, result);
-    }
+  createAlbum(albumName: AlbumName): Effect.Effect<void, RcloneError> {
+    return Effect.gen(this, function* () {
+      validateAlbumName(albumName);
+      const result = yield* this.run([
+        this.config.rcloneBinary,
+        "mkdir",
+        remotePath(this.config.remote, `album/${albumName}`),
+      ]);
+      if (result.exitCode !== 0) {
+        return yield* Effect.fail(rcloneFailure(`Unable to create album ${albumName}`, result));
+      }
+    });
   }
 
-  async copyWorkItem(workItem: WorkItem, manifestDir: string): Promise<void> {
-    validateAlbumName(workItem.albumName);
-    await validateFilesUnchanged(workItem);
-    const manifestPath = await writeManifest(workItem, manifestDir);
-    const result = await this.run([
-      this.config.rcloneBinary,
-      "copy",
-      workItem.sourceFolder,
-      remotePath(this.config.remote, `album/${workItem.albumName}`),
-      "--files-from-raw",
-      manifestPath,
-      "--gphotos-batch-mode",
-      "sync",
-      "--transfers",
-      "1",
-      "--checkers",
-      "1",
-    ]);
+  copyWorkItem(workItem: WorkItem, manifestDir: string): Effect.Effect<void, RcloneError> {
+    return Effect.gen(this, function* () {
+      validateAlbumName(workItem.albumName);
+      yield* Effect.tryPromise({
+        try: () => validateFilesUnchanged(workItem),
+        catch: (error) =>
+          error instanceof RcloneError
+            ? error
+            : new RcloneError({ message: error instanceof Error ? error.message : String(error) }),
+      });
+      const manifestPath = yield* Effect.tryPromise({
+        try: () => writeManifest(workItem, manifestDir),
+        catch: (error) =>
+          error instanceof RcloneError
+            ? error
+            : new RcloneError({ message: error instanceof Error ? error.message : String(error) }),
+      });
+      const result = yield* this.run([
+        this.config.rcloneBinary,
+        "copy",
+        workItem.sourceFolder,
+        remotePath(this.config.remote, `album/${workItem.albumName}`),
+        "--files-from-raw",
+        manifestPath,
+        "--gphotos-batch-mode",
+        "sync",
+        "--transfers",
+        "1",
+        "--checkers",
+        "1",
+      ]);
 
-    if (result.exitCode !== 0) {
-      throw rcloneFailure(`Unable to upload ${workItem.sourceFolderRelativePath}`, result);
-    }
+      if (result.exitCode !== 0) {
+        return yield* Effect.fail(rcloneFailure(`Unable to upload ${workItem.sourceFolderRelativePath}`, result));
+      }
+    });
   }
 
-  private async run(command: readonly string[]): Promise<ProcessResult> {
+  private run(command: readonly string[]): Effect.Effect<ProcessResult, RcloneError> {
     return this.runner.run(command, {
       env: minimalRcloneEnv(process.env),
       timeoutMs: 30 * 60 * 1000,

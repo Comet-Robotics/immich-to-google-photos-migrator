@@ -90,7 +90,7 @@ describe("checkpoint state", () => {
       await fixture.writeFile("state/checkpoint.json", JSON.stringify({ version: 1, workItems: {} }));
 
       await expect(loadOrCreateCheckpoint(checkpointPath, plan, "gphotos", "fingerprint")).rejects.toThrow(
-        "invalid identity",
+        "unsupported version or shape",
       );
     } finally {
       await fixture.cleanup();

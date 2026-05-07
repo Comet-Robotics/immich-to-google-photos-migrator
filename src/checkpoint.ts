@@ -1,10 +1,31 @@
 import { mkdir, open, rename, rm, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { Schema } from "effect";
 import { ALBUM_POLICY_VERSION, CheckpointError, MEDIA_ALLOWLIST_VERSION, type CheckpointState, type MigrationIdentity, type MigrationPlan, type WorkItemId, type WorkItemState } from "./types";
 
 const CHECKPOINT_VERSION = 1;
-const WORK_ITEM_STATUSES = new Set(["planned", "running", "complete", "failed", "uncertain"]);
+const WorkItemStatusSchema = Schema.Literal("planned", "running", "complete", "failed", "uncertain");
+const MigrationIdentitySchema = Schema.Struct({
+  sourceRoot: Schema.String,
+  remote: Schema.String,
+  remoteFingerprint: Schema.String,
+  albumPolicyVersion: Schema.Number,
+  mediaAllowlistVersion: Schema.Number,
+  planFingerprint: Schema.String,
+});
+const WorkItemStateSchema = Schema.Struct({
+  id: Schema.String,
+  status: WorkItemStatusSchema,
+  attempts: Schema.NonNegativeInt,
+  updatedAt: Schema.String,
+  message: Schema.optional(Schema.String),
+});
+const CheckpointStateSchema = Schema.Struct({
+  version: Schema.Literal(CHECKPOINT_VERSION),
+  identity: MigrationIdentitySchema,
+  workItems: Schema.Record({ key: Schema.String, value: WorkItemStateSchema }),
+});
 
 export function migrationIdentity(
   plan: MigrationPlan,
@@ -233,59 +254,18 @@ async function syncDirectory(directory: string): Promise<void> {
 }
 
 function parseCheckpoint(value: unknown): CheckpointState {
-  if (!isRecord(value) || value.version !== CHECKPOINT_VERSION) {
+  try {
+    const decoded = Schema.decodeUnknownSync(CheckpointStateSchema)(value);
+    for (const [id, item] of Object.entries(decoded.workItems)) {
+      if (item.id !== id) {
+        throw new CheckpointError({ message: `Checkpoint work item ${id} has mismatched id` });
+      }
+    }
+    return decoded as CheckpointState;
+  } catch (error) {
+    if (error instanceof CheckpointError) {
+      throw error;
+    }
     throw new CheckpointError({ message: "Checkpoint has an unsupported version or shape" });
   }
-  if (!isIdentity(value.identity) || !isRecord(value.workItems)) {
-    throw new CheckpointError({ message: "Checkpoint has an invalid identity or work item map" });
-  }
-
-  return {
-    version: CHECKPOINT_VERSION,
-    identity: value.identity,
-    workItems: Object.fromEntries(
-      Object.entries(value.workItems).map(([id, item]) => [id, parseWorkItemState(id, item)]),
-    ),
-  };
-}
-
-function parseWorkItemState(id: string, value: unknown): WorkItemState {
-  if (!isRecord(value)) {
-    throw new CheckpointError({ message: `Checkpoint work item ${id} is invalid` });
-  }
-  if (
-    value.id !== id ||
-    typeof value.status !== "string" ||
-    !WORK_ITEM_STATUSES.has(value.status) ||
-    typeof value.attempts !== "number" ||
-    !Number.isInteger(value.attempts) ||
-    value.attempts < 0 ||
-    typeof value.updatedAt !== "string"
-  ) {
-    throw new CheckpointError({ message: `Checkpoint work item ${id} has invalid fields` });
-  }
-
-  return {
-    id,
-    status: value.status as WorkItemState["status"],
-    attempts: value.attempts,
-    updatedAt: value.updatedAt,
-    message: typeof value.message === "string" ? value.message : undefined,
-  };
-}
-
-function isIdentity(value: unknown): value is MigrationIdentity {
-  return (
-    isRecord(value) &&
-    typeof value.sourceRoot === "string" &&
-    typeof value.remote === "string" &&
-    typeof value.remoteFingerprint === "string" &&
-    typeof value.albumPolicyVersion === "number" &&
-    typeof value.mediaAllowlistVersion === "number" &&
-    typeof value.planFingerprint === "string"
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
