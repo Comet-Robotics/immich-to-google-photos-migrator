@@ -169,6 +169,7 @@ export interface ProcessRunOptions {
   readonly env?: Record<string, string>;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+  readonly streamOutput?: boolean;
 }
 
 export interface RcloneAlbumResolution {

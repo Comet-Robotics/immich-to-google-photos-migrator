@@ -27,8 +27,14 @@ export class BunProcessRunner implements ProcessRunner {
         });
 
         const [stdout, stderr, exitCode] = await Promise.all([
-          new Response(proc.stdout).text(),
-          new Response(proc.stderr).text(),
+          readStream(proc.stdout, {
+            streamOutput: options.streamOutput,
+            target: process.stdout,
+          }),
+          readStream(proc.stderr, {
+            streamOutput: options.streamOutput,
+            target: process.stderr,
+          }),
           proc.exited,
         ]);
 
@@ -190,9 +196,16 @@ export class RcloneClient {
   }
 
   private run(command: readonly string[]): Effect.Effect<ProcessResult, RcloneError> {
-    return this.runner.run(command, {
-      env: minimalRcloneEnv(process.env),
-      timeoutMs: 30 * 60 * 1000,
+    return Effect.gen(this, function* () {
+      const commandLabel = renderCommand(command);
+      yield* Effect.logInfo(`[rclone] ${commandLabel}`);
+      const result = yield* this.runner.run(command, {
+        env: minimalRcloneEnv(process.env),
+        timeoutMs: 30 * 60 * 1000,
+        streamOutput: true,
+      });
+      yield* Effect.logInfo(`[rclone] exit=${result.exitCode} ${commandLabel}`);
+      return result;
     });
   }
 }
@@ -291,6 +304,40 @@ function sanitizeOutput(output: string): string {
   return output.replace(/token[=:]\S+/gi, "token=<redacted>").slice(0, 4000);
 }
 
+function renderCommand(command: readonly string[]): string {
+  return command.map((part) => JSON.stringify(part)).join(" ");
+}
+
 function fingerprint(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+interface ReadStreamOptions {
+  readonly streamOutput?: boolean;
+  readonly target: NodeJS.WriteStream;
+}
+
+async function readStream(
+  stream: ReadableStream<Uint8Array> | null,
+  options: ReadStreamOptions,
+): Promise<string> {
+  if (!stream) {
+    return "";
+  }
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let output = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    const chunk = decoder.decode(value, { stream: true });
+    output += chunk;
+    if (options.streamOutput && chunk.length > 0) {
+      options.target.write(chunk);
+    }
+  }
+  output += decoder.decode();
+  return output;
 }
