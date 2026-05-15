@@ -2,7 +2,7 @@ import * as Command from "@effect/cli/Command";
 import * as Options from "@effect/cli/Options";
 import { BunContext } from "@effect/platform-bun";
 import { inspect } from "node:util";
-import { Console, Effect, pipe } from "effect";
+import { Console, Effect, Option, pipe } from "effect";
 import { normalizeConfig, parseRuntimeConfig } from "./config";
 import type { GitBuildInfo } from "./git-build-info.macro.ts";
 import { gitBuildInfo } from "./git-build-info.macro.ts" with { type: "macro" };
@@ -66,8 +66,24 @@ const cliCommand = Command.make(
       .pipe(Options.withDescription("Continue when remote identity/listing is limited"))
       .pipe(Options.withDefault(false)),
     retryUncertain: Options.boolean("retry-uncertain")
-      .pipe(Options.withDescription("Retry uncertain uploads"))
+      .pipe(Options.withDescription("Retry failed or uncertain uploads from a previous run"))
       .pipe(Options.withDefault(false)),
+    retryFailed: Options.boolean("retry-failed")
+      .pipe(Options.withDescription("Alias for --retry-uncertain"))
+      .pipe(Options.withDefault(false)),
+    retryUncertainOnly: Options.boolean("retry-uncertain-only")
+      .pipe(
+        Options.withDescription(
+          "Retry only failed/uncertain work items; use saved plan snapshot when available (implies --retry-uncertain)",
+        ),
+      )
+      .pipe(Options.withDefault(false)),
+    onlyPath: Options.text("only-path")
+      .pipe(Options.withDescription("Comma-separated source folder path filter (relative to --source)"))
+      .pipe(Options.optional),
+    onlyWorkItemId: Options.text("only-work-item-id")
+      .pipe(Options.withDescription("Comma-separated work item id filter"))
+      .pipe(Options.optional),
     printRemoteFingerprint: Options.boolean("print-remote-fingerprint")
       .pipe(
         Options.withDescription(
@@ -91,6 +107,10 @@ const cliCommand = Command.make(
           acknowledgeUnreadablePaths: args.acknowledgeUnreadablePaths || args.yes,
           acknowledgeUnknownRemote: args.acknowledgeUnknownRemote || args.yes,
           retryUncertain: args.retryUncertain,
+          retryFailed: args.retryFailed,
+          retryUncertainOnly: args.retryUncertainOnly,
+          onlyPath: Option.getOrUndefined(args.onlyPath),
+          onlyWorkItemId: Option.getOrUndefined(args.onlyWorkItemId),
           rcloneBinary: args.rcloneBinary,
           printRemoteFingerprint: args.printRemoteFingerprint,
         }),

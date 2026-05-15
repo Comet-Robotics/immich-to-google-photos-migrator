@@ -1,9 +1,26 @@
 import { join, relative } from "node:path";
 import { writePrivateFileAtomicallyHidden } from "./private-file";
-import type { CheckpointState, MigrationPlan, MigrationReport, WorkItem, WorkItemState } from "./types";
+import type {
+  CheckpointState,
+  MigrationPlan,
+  MigrationReport,
+  ReportWorkItemState,
+  WorkItem,
+  WorkItemState,
+} from "./types";
 
 export function buildReport(plan: MigrationPlan, checkpoint: CheckpointState): MigrationReport {
-  const states = Object.values(checkpoint.workItems);
+  const workItemById = new Map(plan.workItems.map((item) => [item.id, item]));
+  const enrich = (state: WorkItemState): ReportWorkItemState => {
+    const item = workItemById.get(state.id);
+    return {
+      ...state,
+      sourceFolderRelativePath: item?.sourceFolderRelativePath,
+      albumName: item?.albumName,
+    };
+  };
+
+  const states = Object.values(checkpoint.workItems).map(enrich);
   const completed = states.filter((state) => state.status === "complete");
   const failed = states.filter((state) => state.status === "failed");
   const uncertain = states.filter((state) => state.status === "uncertain");
@@ -60,6 +77,7 @@ export function renderPlanSummary(plan: MigrationPlan): string {
 }
 
 export function renderFinalReport(report: MigrationReport): string {
+  const incomplete = report.failed.length + report.uncertain.length + report.remaining.length;
   return `${[
     "# Migration Report",
     "",
@@ -78,6 +96,7 @@ export function renderFinalReport(report: MigrationReport): string {
     ...skippedFileLines("Skipped Files", report.skippedFiles),
     ...mediaFileLines("Outside-Leaf Media", report.outsideLeafMedia),
     ...unreadablePathLines("Unreadable Paths", report.unreadablePaths),
+    ...nextStepsLines(incomplete),
   ].join("\n")}\n`;
 }
 
@@ -87,16 +106,25 @@ export async function writeReport(reportDir: string, filename: string, contents:
   return path;
 }
 
-function stateLines(title: string, states: readonly WorkItemState[]): string[] {
+function stateLines(title: string, states: readonly ReportWorkItemState[]): string[] {
   if (states.length === 0) {
     return [];
   }
   return [
     `## ${title}`,
     "",
-    ...states.map((state) => `- ${state.id}: ${state.message ?? state.status}`),
+    ...states.map((state) => `- ${formatReportWorkItemLine(state)}`),
     "",
   ];
+}
+
+function formatReportWorkItemLine(state: ReportWorkItemState): string {
+  const location =
+    state.sourceFolderRelativePath !== undefined
+      ? `${state.sourceFolderRelativePath}${state.albumName ? ` -> ${state.albumName}` : ""}`
+      : state.id;
+  const detail = state.message ?? state.status;
+  return `${state.id} (${location}): ${detail}`;
 }
 
 function workItemLines(title: string, items: readonly WorkItem[]): string[] {
@@ -107,6 +135,25 @@ function workItemLines(title: string, items: readonly WorkItem[]): string[] {
     `## ${title}`,
     "",
     ...items.map((item) => `- ${item.id}: ${item.sourceFolderRelativePath} -> ${item.albumName}`),
+    "",
+  ];
+}
+
+function nextStepsLines(incompleteCount: number): string[] {
+  if (incompleteCount === 0) {
+    return [];
+  }
+  return [
+    "## Next Steps",
+    "",
+    "Some work did not finish cleanly. Re-run the same command with your existing `--state-dir` and add:",
+    "",
+    "- `--retry-uncertain` (or `--retry-failed`) to retry failed and uncertain folders",
+    "- `--retry-uncertain-only` to skip full library discovery when `plan-snapshot.json` exists in the state directory",
+    "- `--only-path <folder>` or `--only-work-item-id <id>` to retry a subset while debugging",
+    "- `--concurrency 1` if failures look rate-limit or timeout related",
+    "",
+    "Review rclone stderr in the messages above, then spot-check matching `ImmichBackup:` albums in Google Photos.",
     "",
   ];
 }

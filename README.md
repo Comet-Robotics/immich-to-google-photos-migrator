@@ -59,7 +59,10 @@ Useful options:
 - `--rclone-binary <path>`: explicit rclone executable, default `rclone`
 - `--acknowledge-unreadable-paths`: continue when some source paths could not be read
 - `--acknowledge-unknown-remote`: continue when rclone cannot prove album listing or account identity
-- `--retry-uncertain`: retry work that may have partially uploaded in a previous run
+- `--retry-uncertain` / `--retry-failed`: retry failed or uncertain uploads from a previous run
+- `--retry-uncertain-only`: retry only failed/uncertain work items; skip full library discovery when `plan-snapshot.json` exists in `--state-dir` (implies `--retry-uncertain`)
+- `--only-path <paths>`: comma-separated source folder paths (relative to `--source`) to limit which work items run
+- `--only-work-item-id <ids>`: comma-separated checkpoint work item ids to limit which work items run
 - `--print-remote-fingerprint`: run rclone preflight only, print the stable `v2:` remote fingerprint (for `checkpoint.json`), then exit
 - `--yes`: apply all explicit acknowledgements
 
@@ -69,7 +72,13 @@ Uploads are additive. The tool uses rclone copy-style behavior and does not dele
 
 The migrator writes checkpoint state after each successful upload work item. Re-run the same command with the same state directory to continue after an interruption.
 
-Completed work is skipped only when the checkpoint identity still matches the current source root, remote name, stable Google Photos remote fingerprint (`v2:` prefix), album policy, media allowlist, and planned file manifests. The fingerprint is derived from the remote `type` and OAuth `client_id` only (tokens and `client_secret` are ignored), so OAuth refresh does not invalidate resume. If you upgrade from an older tool version that stored a legacy full-config hash, update `identity.remoteFingerprint` in `checkpoint.json` once—use `--print-remote-fingerprint` to print the current value. Work left `running` by an interrupted process is normalized to `uncertain` on resume and is not retried unless you pass `--retry-uncertain`.
+Completed work is skipped only when the checkpoint identity still matches the current source root, remote name, stable Google Photos remote fingerprint (`v2:` prefix), album policy, media allowlist, and planned file manifests. The fingerprint is derived from the remote `type` and OAuth `client_id` only (tokens and `client_secret` are ignored), so OAuth refresh does not invalidate resume. If you upgrade from an older tool version that stored a legacy full-config hash, update `identity.remoteFingerprint` in `checkpoint.json` once—use `--print-remote-fingerprint` to print the current value.
+
+Work left `running` by an interrupted process is normalized to `uncertain` on resume. Definitive rclone upload failures are recorded as `failed`. Both `failed` and `uncertain` items are skipped on resume unless you pass `--retry-uncertain` (or `--retry-failed`).
+
+After any upload run, the tool writes `plan-snapshot.json` into `--state-dir`. On later finish-up runs, `--retry-uncertain-only` loads that snapshot instead of scanning the full library. If the snapshot is missing (for example, after upgrading before any new upload run), the tool falls back to full discovery automatically—no manual state edits required.
+
+The final `migration-report.md` lists folder paths and album names for failed/uncertain work, includes rclone stderr when available, and adds a **Next Steps** section when work remains incomplete.
 
 Only one run may use a state directory at a time. If a previous process was interrupted, inspect the lock file and active processes before removing the lock manually.
 

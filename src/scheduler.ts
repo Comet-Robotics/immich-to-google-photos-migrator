@@ -2,10 +2,22 @@ import { join } from "node:path";
 import { Deferred, Effect, Queue, Ref } from "effect";
 import { acquireRunLock, initialCheckpoint, loadOrCreateCheckpoint, saveCheckpoint, updateWorkItem } from "./checkpoint";
 import { discoverSourceTreeEffect } from "./discovery";
+import { loadPlanSnapshot, savePlanSnapshot } from "./plan-snapshot";
 import { buildMigrationPlan } from "./plan";
 import { buildReport, renderFinalReport, renderPlanSummary, writeReport } from "./report";
 import { BunProcessRunner, type CopyWorkItemOutcome, RcloneClient } from "./rclone";
-import { CheckpointError, RcloneError, type AppError, type CheckpointState, type MigrationPlan, type ProcessRunner, type RuntimeConfig, type WorkItem } from "./types";
+import {
+  CheckpointError,
+  RcloneError,
+  type AppError,
+  type CheckpointState,
+  type MigrationPlan,
+  type ProcessRunner,
+  type RuntimeConfig,
+  type WorkItem,
+} from "./types";
+import { filterRetryIncompleteWorkItems, filterWorkItems } from "./work-item-filter";
+import { isRetryEligibleStatus, workItemFailureUpdate } from "./work-item-error";
 
 export interface RunMigrationOptions {
   readonly config: RuntimeConfig;
@@ -30,7 +42,7 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
     const runner = options.runner ?? new BunProcessRunner();
     const rclone = new RcloneClient({ config, runner });
     yield* Effect.logInfo(
-      `Starting migration run (source=${config.sourceRoot}, remote=${config.remote}, planOnly=${config.planOnly})`,
+      `Starting migration run (source=${config.sourceRoot}, remote=${config.remote}, planOnly=${config.planOnly}, retryUncertainOnly=${config.retryUncertainOnly})`,
     );
     yield* Effect.acquireRelease(
       Effect.tryPromise({
@@ -47,20 +59,30 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
     yield* Effect.logDebug("Running rclone preflight checks");
     const preflight = yield* rclone.preflight();
     yield* Effect.logDebug(`rclone preflight complete (remote fingerprint: ${preflight.remoteFingerprint})`);
-    yield* Effect.logInfo("Discovering source media tree");
-    const discovery = yield* discoverSourceTreeEffect(config.sourceRoot).pipe(
-      Effect.mapError((error) => new CheckpointError({ message: String(error) })),
-    );
-    yield* Effect.logInfo(
-      `Discovery complete (${discovery.leafFolders.length} leaf folders, ${discovery.outsideLeafFiles.length} non-leaf files, ${discovery.unreadablePaths.length} unreadable paths)`,
-    );
-    const plan = buildMigrationPlan(discovery);
-    yield* Effect.logInfo(`Built migration plan (${plan.albums.length} albums, ${plan.workItems.length} work items)`);
+
+    if (config.retryUncertainOnly && config.planOnly) {
+      return yield* Effect.fail(
+        new CheckpointError({
+          message: "--retry-uncertain-only cannot be used with --plan-only.",
+        }),
+      );
+    }
+
+    const plan = yield* resolveMigrationPlan(config);
+    yield* Effect.logInfo(`Using migration plan (${plan.albums.length} albums, ${plan.workItems.length} work items)`);
     const planReportPath = yield* Effect.tryPromise({
       try: () => writeReport(config.reportDir, "migration-plan.md", renderPlanSummary(plan)),
       catch: (error) => new CheckpointError({ message: String(error) }),
     });
     yield* Effect.logInfo(`Wrote plan report to ${planReportPath}`);
+
+    if (!config.planOnly) {
+      yield* Effect.tryPromise({
+        try: () => savePlanSnapshot(config.stateDir, plan),
+        catch: (error) => new CheckpointError({ message: String(error) }),
+      });
+      yield* Effect.logDebug("Saved plan snapshot for future retry-only runs");
+    }
 
     if (config.planOnly) {
       const checkpoint = initialCheckpoint(plan, config.remote, preflight.remoteFingerprint);
@@ -97,6 +119,23 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
     });
     yield* Effect.logDebug("Checkpoint initialized and persisted");
 
+    let workItems = plan.workItems;
+    if (config.retryUncertainOnly) {
+      workItems = filterRetryIncompleteWorkItems(workItems, checkpoint.workItems);
+      yield* Effect.logInfo(
+        `Retry-only mode: ${workItems.length} failed or uncertain work item(s) selected from checkpoint`,
+      );
+      if (workItems.length === 0) {
+        yield* Effect.logInfo("No failed or uncertain work items to retry.");
+      }
+    }
+
+    workItems = filterWorkItems(workItems, config);
+    if (config.onlyPaths.length > 0 || config.onlyWorkItemIds.length > 0) {
+      yield* Effect.logInfo(`Path/id filters applied: ${workItems.length} work item(s) will be considered`);
+    }
+
+    const albumNames = [...new Set(workItems.map((item) => item.albumName))];
     yield* Effect.logDebug("Listing destination albums via rclone");
     const visibleAlbums = yield* rclone.listAlbums();
     if (visibleAlbums === "listing-unavailable" && !config.acknowledgeUnknownRemote) {
@@ -107,11 +146,8 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
       );
     }
 
-    const albumResolutions = rclone.resolveAlbums(
-      plan.albums.map((album) => album.albumName),
-      visibleAlbums,
-    );
-    yield* Effect.logInfo(`Resolved ${albumResolutions.length} destination album(s)`);
+    const albumResolutions = rclone.resolveAlbums(albumNames, visibleAlbums);
+    yield* Effect.logInfo(`Resolved ${albumResolutions.length} destination album(s) for this run`);
 
     const duplicate = albumResolutions.find((resolution) => resolution.status === "duplicate-visible");
     if (duplicate) {
@@ -135,14 +171,16 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
       }
     }
 
-    yield* Effect.logInfo(`Starting uploads (${plan.workItems.length} work items, concurrency=${config.concurrency})`);
-    checkpoint = yield* runWorkItems({
-      config,
-      checkpoint,
-      checkpointPath,
-      rclone,
-      workItems: plan.workItems,
-    });
+    if (workItems.length > 0) {
+      yield* Effect.logInfo(`Starting uploads (${workItems.length} work items, concurrency=${config.concurrency})`);
+      checkpoint = yield* runWorkItems({
+        config,
+        checkpoint,
+        checkpointPath,
+        rclone,
+        workItems,
+      });
+    }
 
     const report = buildReport(plan, checkpoint);
     const finalReportPath = yield* Effect.tryPromise({
@@ -151,10 +189,49 @@ export function runMigrationEffect(options: RunMigrationOptions): Effect.Effect<
     });
     const ok = report.failed.length === 0 && report.uncertain.length === 0 && report.remaining.length === 0;
     yield* Effect.logInfo(`Wrote final report to ${finalReportPath}`);
+    if (!ok) {
+      yield* Effect.logInfo(
+        "Migration finished with incomplete work. Re-run with --retry-uncertain (or --retry-failed). Use --retry-uncertain-only after a plan snapshot exists to skip full discovery.",
+      );
+    }
     yield* Effect.logInfo(`Migration completed with status=${ok ? "ok" : "not-ok"}`);
 
     return { plan, checkpoint, planReportPath, finalReportPath, ok };
   }).pipe(Effect.scoped);
+}
+
+function resolveMigrationPlan(config: RuntimeConfig): Effect.Effect<MigrationPlan, CheckpointError> {
+  return Effect.gen(function* () {
+    if (config.retryUncertainOnly) {
+      const snapshot = yield* Effect.tryPromise({
+        try: () => loadPlanSnapshot(config.stateDir),
+        catch: (error) => new CheckpointError({ message: String(error) }),
+      });
+      if (snapshot) {
+        if (snapshot.sourceRoot !== config.sourceRoot) {
+          return yield* Effect.fail(
+            new CheckpointError({
+              message: `Plan snapshot source root does not match --source (${snapshot.sourceRoot}).`,
+            }),
+          );
+        }
+        yield* Effect.logInfo("Loaded plan snapshot; skipping source discovery");
+        return snapshot;
+      }
+      yield* Effect.logInfo(
+        "No plan snapshot found in state directory; falling back to full source discovery for this run",
+      );
+    }
+
+    yield* Effect.logInfo("Discovering source media tree");
+    const discovery = yield* discoverSourceTreeEffect(config.sourceRoot).pipe(
+      Effect.mapError((error) => new CheckpointError({ message: String(error) })),
+    );
+    yield* Effect.logInfo(
+      `Discovery complete (${discovery.leafFolders.length} leaf folders, ${discovery.outsideLeafFiles.length} non-leaf files, ${discovery.unreadablePaths.length} unreadable paths)`,
+    );
+    return buildMigrationPlan(discovery);
+  });
 }
 
 interface RunWorkItemsOptions {
@@ -215,10 +292,7 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
           for (const item of items) {
             const checkpoint = yield* Ref.get(stateRef);
             const state = checkpoint.workItems[item.id];
-            if (state?.status === "complete") {
-              continue;
-            }
-            if (state?.status === "uncertain" && !options.config.retryUncertain) {
+            if (!isRetryEligibleStatus(state?.status, options.config.retryUncertain)) {
               continue;
             }
 
@@ -239,14 +313,14 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
             );
 
             if (copyResult._tag === "Failure") {
-              const message = String(copyResult.cause);
+              const failure = workItemFailureUpdate(copyResult.cause);
               yield* updateAndSave(item, {
-                status: "uncertain",
-                message,
+                status: failure.status,
+                message: failure.message,
               });
               const completed = yield* Ref.updateAndGet(completedRef, (count) => count + 1);
               yield* Effect.logInfo(
-                `Progress ${completed}/${totalWorkItems}: uncertain upload for ${item.sourceFolderRelativePath}`,
+                `Progress ${completed}/${totalWorkItems}: ${failure.status} upload for ${item.sourceFolderRelativePath}`,
               );
               continue;
             }
@@ -294,7 +368,6 @@ function runWorkItems(options: RunWorkItemsOptions): Effect.Effect<CheckpointSta
     return yield* Ref.get(stateRef);
   }).pipe(Effect.scoped);
 }
-
 
 function groupByAlbum(workItems: readonly WorkItem[]): Map<string, WorkItem[]> {
   const grouped = new Map<string, WorkItem[]>();

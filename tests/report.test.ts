@@ -26,6 +26,9 @@ describe("reports", () => {
       expect(planSummary).toContain("event/metadata.json: unsupported-extension");
       expect(planSummary).not.toContain(fixture.root);
       expect(finalReport).toContain("Failed: 1");
+      expect(finalReport).toContain("(event -> ImmichBackup: event)");
+      expect(finalReport).toContain("ImmichBackup: event");
+      expect(finalReport).toContain("## Next Steps");
       expect(finalReport).toContain("Remaining: 0");
       expect(finalReport).toContain("No-supported-media folders: 1");
     } finally {

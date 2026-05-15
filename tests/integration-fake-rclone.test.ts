@@ -69,6 +69,9 @@ function config(root: string): RuntimeConfig {
     acknowledgeUnreadablePaths: false,
     acknowledgeUnknownRemote: false,
     retryUncertain: false,
+    retryUncertainOnly: false,
+    onlyPaths: [],
+    onlyWorkItemIds: [],
     rcloneBinary: "rclone",
     printRemoteFingerprint: false,
   };

@@ -129,8 +129,46 @@ describe("runMigration", () => {
       });
 
       expect(result.ok).toBe(false);
-      expect(Object.values(result.checkpoint.workItems)[0]?.status).toBe("uncertain");
+      expect(Object.values(result.checkpoint.workItems)[0]?.status).toBe("failed");
+      expect(Object.values(result.checkpoint.workItems)[0]?.message).toContain("network failure");
       expect(result.finalReportPath).toBe(`${fixture.root}/reports/migration-report.md`);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  test("retry-uncertain-only retries failed work without rediscovering when snapshot exists", async () => {
+    const fixture = await createTempFixture();
+    try {
+      await fixture.writeFile("event/photo.jpg");
+      const failedRunner = new FakeProcessRunner([
+        {},
+        { stdout: CFG },
+        { stdout: "" },
+        {},
+        { exitCode: 1, stderr: "network failure" },
+      ]);
+      const failed = await runMigration({
+        config: config(fixture.root),
+        runner: failedRunner,
+      });
+      expect(failed.ok).toBe(false);
+
+      const retryRunner = new FakeProcessRunner([
+        {},
+        { stdout: CFG },
+        { stdout: "" },
+        {},
+        {},
+      ]);
+      const retried = await runMigration({
+        config: config(fixture.root, { retryUncertain: true, retryUncertainOnly: true }),
+        runner: retryRunner,
+      });
+
+      expect(retried.ok).toBe(true);
+      expect(Object.values(retried.checkpoint.workItems)[0]?.status).toBe("complete");
+      expect(retryRunner.calls.filter((call) => call.command[1] === "copy")).toHaveLength(1);
     } finally {
       await fixture.cleanup();
     }
@@ -167,6 +205,9 @@ function config(root: string, overrides: Partial<RuntimeConfig> = {}): RuntimeCo
     acknowledgeUnreadablePaths: false,
     acknowledgeUnknownRemote: false,
     retryUncertain: false,
+    retryUncertainOnly: false,
+    onlyPaths: [],
+    onlyWorkItemIds: [],
     rcloneBinary: "rclone",
     printRemoteFingerprint: false,
     ...overrides,

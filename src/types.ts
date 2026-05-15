@@ -46,6 +46,9 @@ export interface RuntimeConfig {
   readonly acknowledgeUnreadablePaths: boolean;
   readonly acknowledgeUnknownRemote: boolean;
   readonly retryUncertain: boolean;
+  readonly retryUncertainOnly: boolean;
+  readonly onlyPaths: readonly string[];
+  readonly onlyWorkItemIds: readonly string[];
   readonly rcloneBinary: string;
   readonly printRemoteFingerprint: boolean;
 }
@@ -180,10 +183,15 @@ export interface RcloneAlbumResolution {
   readonly message?: string;
 }
 
+export interface ReportWorkItemState extends WorkItemState {
+  readonly sourceFolderRelativePath?: RelativePath;
+  readonly albumName?: AlbumName;
+}
+
 export interface MigrationReport {
-  readonly completed: readonly WorkItemState[];
-  readonly failed: readonly WorkItemState[];
-  readonly uncertain: readonly WorkItemState[];
+  readonly completed: readonly ReportWorkItemState[];
+  readonly failed: readonly ReportWorkItemState[];
+  readonly uncertain: readonly ReportWorkItemState[];
   readonly remaining: readonly WorkItem[];
   readonly skippedFiles: readonly SkippedFile[];
   readonly outsideLeafMedia: readonly SupportedMediaFile[];
